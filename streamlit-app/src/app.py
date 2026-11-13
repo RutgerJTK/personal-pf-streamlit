@@ -1,10 +1,13 @@
 import streamlit as st
 
+from auth import render_logout, require_login
+
 st.set_page_config(page_title="Portfolio Tracker", page_icon="📈", layout="wide")
 
-# ---- AUTH GUARD GOES HERE (next step) ----
-# Nothing below this line may run, and no data may be fetched,
-# until the guard has confirmed the session is authenticated.
+# Nothing below this line runs, and no data is fetched,
+# until the session is authenticated.
+require_login()
+render_logout()
 
 pages = [
     st.Page("views/overview.py", title="Overview", icon="🏠", default=True),

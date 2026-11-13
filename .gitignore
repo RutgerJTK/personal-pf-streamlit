@@ -218,3 +218,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- personal-pf-streamlit specific ----
+
+# Streamlit secrets (absolute blocker, AWS keys + app credentials live here)
+.streamlit/secrets.toml
+streamlit-app/.streamlit/secrets.toml
+
+# Raw broker exports and any local data (data lives in S3, never in git)
+cleaning-pipeline/raw_data/
+raw_data/
+*.csv
+*.xlsx
+*.xls
+*.ods
+
+# Scratch space
+tmp/
+
+# Editor / OS
+.vscode/
+.DS_Store

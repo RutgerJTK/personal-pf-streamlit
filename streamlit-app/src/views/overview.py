@@ -9,13 +9,12 @@ st.title("🏠 Overview")
 df = load_transactions_or_stop()
 s = engine.summary(df)
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Net invested", f"€{s['net_invested']:,.0f}", help="All buys minus all sell proceeds, fees included.")
-c2.metric("Bought", f"€{s['bought']:,.0f}")
-c3.metric("Dividends received", f"€{s['dividends']:,.2f}", help="After withholding tax.")
-c4.metric("Open positions", s["open_positions"])
+c1, c2, c3 = st.columns(3)
+c1.metric("Net invested", f"€{s['net_invested']:,.2f}", help="Your own money put in via iDEAL deposits. Reinvested dividends and sale proceeds are not counted.")
+c2.metric("Dividends received", f"€{s['dividends']:,.2f}", help="After withholding tax.")
+c3.metric("Open positions", s["open_positions"])
 
-st.subheader("Money in, money back")
+st.subheader("Money in, dividends back")
 flows = engine.cumulative_cashflows(df)
 
 fig = go.Figure()

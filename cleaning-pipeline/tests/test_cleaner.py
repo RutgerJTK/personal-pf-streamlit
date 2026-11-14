@@ -143,3 +143,30 @@ def test_partial_fills_with_same_order_id_are_both_kept(tmp_path, rules):
     out, _ = _run(tmp_path, tx, [], rules)
     assert out.quantity.sum() == 5
     assert out.net_amount.sum() == 500.00
+
+
+def test_deposits_settled_reservation_nets_out_and_pending_counts(tmp_path, rules):
+    acc = [  # newest first
+        _acc_row("13-11-2025", "16:20", "13-11-2025", "", "Reservation iDEAL", "EUR", "750,00"),   # pending
+        _acc_row("12-10-2025", "10:00", "12-10-2025", "", "iDEAL Deposit", "EUR", "300,00"),
+        _acc_row("12-10-2025", "10:00", "12-10-2025", "", "Reservation iDEAL", "EUR", "-300,00"),
+        _acc_row("10-10-2025", "09:00", "10-10-2025", "", "Reservation iDEAL", "EUR", "300,00"),
+        _acc_row("01-02-2025", "09:00", "01-02-2025", "", "iDEAL storting", "EUR", "135,00"),
+    ]
+    out, report = _run(tmp_path, [], acc, rules)
+    dep = out[out.action == "DEPOSIT"]
+    assert dep.net_amount.sum() == 1185.00           # 135 + 300 + 750 pending
+    assert dep.datetime.tolist() == ["2025-02-01 00:00:00", "2025-10-10 00:00:00", "2025-11-13 00:00:00"]
+    assert (dep["isin"] == "").all() and (dep.quantity == 0).all()
+    assert any("pending" in n for n in report.notes)
+
+
+def test_one_cent_test_deposit_is_ignored(tmp_path, rules):
+    acc = [
+        _acc_row("01-02-2025", "10:00", "01-02-2025", "", "iDEAL storting", "EUR", "135,00"),
+        _acc_row("01-02-2025", "10:00", "01-02-2025", "", "iDEAL storting", "EUR", "0,01"),
+    ]
+    out, report = _run(tmp_path, [], acc, rules)
+    dep = out[out.action == "DEPOSIT"]
+    assert dep.net_amount.tolist() == [135.00]
+    assert any("test deposit" in n for n in report.notes)

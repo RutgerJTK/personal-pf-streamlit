@@ -7,7 +7,7 @@ anonymised file, ``portfolio_transactions.csv``, with exactly five columns:
 
     datetime      ISO 8601 string, YYYY-MM-DD HH:MM:SS
     isin          security identifier
-    action        BUY | SELL | DIVIDEND
+    action        BUY | SELL | DIVIDEND | DEPOSIT
     quantity      shares, always >= 0 (0 for dividends)
     net_amount    EUR. BUY/SELL: absolute value including all fees and
                   AutoFX costs. DIVIDEND: after withholding tax (what hit
@@ -19,6 +19,9 @@ Sources
 * DIVIDEND    -> Account.csv: dividend, dividend tax, capital repayments,
                  coupons, cash-in-lieu. Netted per ISIN per value date and
                  converted to EUR with DEGIRO's own rate (see _fx_lookup).
+* DEPOSIT     -> Account.csv: iDEAL deposits (money you put in from outside).
+                 isin is empty, quantity 0. Pending iDEAL reservations count
+                 as deposits from the day they are booked.
 * Corporate actions (rows without Order ID) are handled by the rules in
   shared-config/corporate_actions.json. Anything not covered stops the run.
 
@@ -75,6 +78,14 @@ DIVIDEND_DESCRIPTIONS = {
     "Interest Income Distribution",  # DEGIRO re-books some dividends as this
     "Verrekening van Aandelen",     # cash in lieu of spun-off fractional shares
 }
+# Account.csv rows that move your own money into the account. The reservation
+# rows are booked +X when you start an iDEAL payment and -X again when it
+# settles (together with the real "iDEAL Deposit" +X), so they net to zero
+# once settled and only a still-pending payment remains.
+DEPOSIT_DESCRIPTIONS = {"iDEAL Deposit", "iDEAL storting", "Reservation iDEAL"}
+# Real deposits below this (EUR) are iDEAL verification payments (e.g. the
+# 1 cent test deposit when the account was opened) and are not tracked.
+MIN_DEPOSIT_EUR = 1.00
 # Account.csv rows with an ISIN that are knowingly not income/trades.
 KNOWN_NON_INCOME_PREFIXES = (
     "Koop ", "Verkoop ", "Valuta ", "DEGIRO Transactiekosten",
@@ -346,6 +357,41 @@ def build_dividends(acc: pd.DataFrame, report: Report) -> pd.DataFrame:
 
 
 # =============================================================================
+# DEPOSITS
+# =============================================================================
+def build_deposits(acc: pd.DataFrame, report: Report) -> pd.DataFrame:
+    """Daily net of own-money inflows (EUR). Zero-net days (settled reservations) are dropped."""
+    dep = acc[acc["description"].isin(DEPOSIT_DESCRIPTIONS)].copy()
+    if dep.empty:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+    if (dep["cur"] != "EUR").any():
+        raise CleanerError("Deposit rows in a currency other than EUR; not supported")
+    dep["amount_n"] = dep["amount"].map(parse_decimal)
+    if dep["amount_n"].isna().any():
+        raise CleanerError("Deposit rows with an empty amount")
+    is_real = dep["description"].isin({"iDEAL Deposit", "iDEAL storting"})
+    tiny = is_real & (dep["amount_n"].abs() < MIN_DEPOSIT_EUR)
+    if tiny.any():
+        report.note(f"ignored {int(tiny.sum())} test deposit(s) under EUR {MIN_DEPOSIT_EUR:.2f} "
+                    f"(total EUR {dep.loc[tiny, 'amount_n'].sum():.2f})")
+        dep = dep[~tiny]
+    dep["day"] = _iso_date(dep["date"])
+    daily = dep.groupby("day", as_index=False)["amount_n"].sum()
+    daily["amount_n"] = daily["amount_n"].round(2)
+    daily = daily[daily["amount_n"].abs() >= 0.005]
+    pending = dep.loc[dep["description"] == "Reservation iDEAL", "amount_n"].sum()
+    if abs(pending) >= 0.005:
+        report.note(f"EUR {pending:,.2f} of iDEAL payments still pending (counted as deposited)")
+    return pd.DataFrame({
+        "datetime": daily["day"] + " 00:00:00",
+        "isin": "",
+        "action": "DEPOSIT",
+        "quantity": 0.0,
+        "net_amount": daily["amount_n"].values,
+    })
+
+
+# =============================================================================
 # Validation + orchestration
 # =============================================================================
 def validate_positions(df: pd.DataFrame) -> pd.DataFrame:
@@ -372,8 +418,9 @@ def clean(account_path: Path, transactions_path: Path, rules_path: Path = DEFAUL
 
     trades = build_trades(tx, rules, report)
     dividends = build_dividends(acc, report)
+    deposits = build_deposits(acc, report)
 
-    frames = [f for f in (trades, dividends) if not f.empty]
+    frames = [f for f in (trades, dividends, deposits) if not f.empty]
     out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=OUTPUT_COLUMNS)
     out = out.astype({"quantity": "float64", "net_amount": "float64"})
     out = out.sort_values("datetime", kind="stable").reset_index(drop=True)
@@ -383,7 +430,9 @@ def clean(account_path: Path, transactions_path: Path, rules_path: Path = DEFAUL
     open_positions = validate_positions(out)
     report.note(
         f"{(out.action == 'BUY').sum()} buys, {(out.action == 'SELL').sum()} sells, "
-        f"{(out.action == 'DIVIDEND').sum()} dividend payments; {len(open_positions)} open position(s)"
+        f"{(out.action == 'DIVIDEND').sum()} dividend payments, "
+        f"{(out.action == 'DEPOSIT').sum()} deposit days (EUR {out.loc[out.action == 'DEPOSIT', 'net_amount'].sum():,.2f}); "
+        f"{len(open_positions)} open position(s)"
     )
     assert list(out.columns) == OUTPUT_COLUMNS
     return out, report

@@ -23,13 +23,13 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 CLEANED_KEY = "cleaned/portfolio_transactions.csv"
 EXPECTED_COLUMNS = ["datetime", "isin", "action", "quantity", "net_amount"]
-ALLOWED_ACTIONS = {"BUY", "SELL", "DIVIDEND"}
+ALLOWED_ACTIONS = {"BUY", "SELL", "DIVIDEND", "DEPOSIT"}
 
 
 def parse_transactions(raw: bytes | str) -> pd.DataFrame:
     """Parse + validate the cleaned CSV. Pure function (no Streamlit, no AWS)."""
     buf = io.BytesIO(raw) if isinstance(raw, bytes) else io.StringIO(raw)
-    df = pd.read_csv(buf)
+    df = pd.read_csv(buf, keep_default_na=False, dtype={"isin": str})
     if list(df.columns) != EXPECTED_COLUMNS:
         raise ValueError(f"Unexpected columns: {list(df.columns)}")
     df["datetime"] = pd.to_datetime(df["datetime"], format="%Y-%m-%d %H:%M:%S")

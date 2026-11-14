@@ -1,0 +1,26 @@
+{
+  "_readme": [
+    "Benchmarks for the Benchmark page. Edit freely; no code changes needed. The order here is the order in the picker.",
+    "tickers: Yahoo Finance symbols, tried in order until one returns history. Prices are converted to EUR with daily FX.",
+    "Prefer accumulating UCITS ETFs: their price includes reinvested dividends (total return), which is the fair comparison for your portfolio, whose dividends are counted too.",
+    "Symbols starting with '^' are price indices (no dividends) and only used as a fallback. Futures (=F) and crypto have no dividends anyway.",
+    "group: used to group the picker. default: selected when the page opens."
+  ],
+  "S&P 500":               {"group": "Equity", "default": true,  "tickers": ["SXR8.DE", "CSPX.AS", "^GSPC"], "note": "iShares Core S&P 500 (Acc)"},
+  "MSCI World":            {"group": "Equity", "default": true,  "tickers": ["EUNL.DE", "IWDA.AS", "URTH"], "note": "iShares Core MSCI World (Acc)"},
+  "FTSE All-World":        {"group": "Equity", "default": false, "tickers": ["VWCE.DE", "VWRA.L"], "note": "Vanguard FTSE All-World (Acc), incl. emerging markets"},
+  "Nasdaq-100":            {"group": "Equity", "default": false, "tickers": ["SXRV.DE", "CNDX.L", "^NDX"], "note": "iShares Nasdaq 100 (Acc)"},
+  "AEX":                   {"group": "Equity", "default": false, "tickers": ["IAEX.AS", "^AEX"], "note": "iShares AEX, dividends reinvested"},
+  "Euro Stoxx 50":         {"group": "Equity", "default": false, "tickers": ["SXRT.DE", "^STOXX50E"], "note": "iShares Core EURO STOXX 50 (Acc)"},
+  "STOXX Europe 600":      {"group": "Equity", "default": false, "tickers": ["MEUD.PA", "^STOXX"], "note": "Amundi STOXX Europe 600 (Acc)"},
+  "DAX":                   {"group": "Equity", "default": false, "tickers": ["^GDAXI"], "note": "Performance index, dividends included"},
+  "MSCI Emerging Markets": {"group": "Equity", "default": false, "tickers": ["IS3N.DE", "EIMI.L"], "note": "iShares Core MSCI EM IMI (Acc)"},
+  "Nikkei 225":            {"group": "Equity", "default": false, "tickers": ["^N225"], "note": "Price index"},
+  "Gold":                  {"group": "Commodity", "default": true,  "tickers": ["GC=F", "4GLD.DE"], "note": "Gold futures, in EUR"},
+  "Silver":                {"group": "Commodity", "default": false, "tickers": ["SI=F"], "note": "Silver futures, in EUR"},
+  "Brent crude":           {"group": "Commodity", "default": false, "tickers": ["BZ=F"], "note": "Front-month futures, in EUR (no roll costs)"},
+  "Bitcoin":               {"group": "Crypto", "default": false, "tickers": ["BTC-EUR"], "note": "Spot"},
+  "Ethereum":              {"group": "Crypto", "default": false, "tickers": ["ETH-EUR"], "note": "Spot"},
+  "Euro govt bonds":       {"group": "Bonds & cash", "default": false, "tickers": ["EUNH.DE", "IEGA.AS"], "note": "iShares Core € Govt Bond, dividends reinvested"},
+  "Euro cash (€STR)":      {"group": "Bonds & cash", "default": false, "tickers": ["XEON.DE"], "note": "Xtrackers € Overnight Rate: what a savings-like cash position earned"}
+}

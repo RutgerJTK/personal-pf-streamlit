@@ -11,6 +11,7 @@ render_logout()
 
 pages = [
     st.Page("views/overview.py", title="Overview", icon="🏠", default=True),
+    st.Page("views/holdings.py", title="Holdings", icon="💼"),
     st.Page("views/benchmark.py", title="Benchmark", icon="🏁"),
     st.Page("views/pnl.py", title="Realized vs Unrealized", icon="💶"),
     st.Page("views/dividends.py", title="Dividends", icon="📅"),

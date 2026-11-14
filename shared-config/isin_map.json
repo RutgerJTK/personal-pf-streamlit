@@ -1,0 +1,237 @@
+{
+  "_readme": [
+    "ISIN -> display metadata for the dashboard. Edit freely; no code changes needed.",
+    "group:     'Stock' or 'ETF'. ETCs/ETPs (gold, bitcoin) count as 'ETF' for the stocks-vs-ETFs split; 'kind' says what they really are.",
+    "tickers:   Yahoo Finance symbols, tried in order until one returns a price. Prefer EUR listings.",
+    "sector:    GICS sector for single stocks, or a non-equity asset class (Commodities, Crypto).",
+    "sectors:   ETFs only. Look-through sector weights in percent (they are normalised, so they need not add up to exactly 100).",
+    "region / regions: same idea for geography. currency: the currency the underlying assets are priced in (economic exposure, not the trading line).",
+    "ETF look-through weights are approximate snapshots (see 'weights_as_of'). Refresh them from the fund factsheet now and then."
+  ],
+  "IE00B3XXRP09": {
+    "name": "Vanguard S&P 500 (VUSA)",
+    "short": "VUSA",
+    "group": "ETF",
+    "kind": "Equity ETF",
+    "tickers": ["VUSA.AS", "VUSA.DE"],
+    "currency": "USD",
+    "region": "United States",
+    "weights_as_of": "2026-10 (approx., S&P 500 GICS weights)",
+    "sectors": {
+      "Information Technology": 40.0,
+      "Financials": 12.0,
+      "Communication Services": 10.0,
+      "Consumer Discretionary": 10.0,
+      "Health Care": 8.0,
+      "Industrials": 7.2,
+      "Consumer Staples": 4.0,
+      "Energy": 3.0,
+      "Utilities": 2.3,
+      "Real Estate": 1.8,
+      "Materials": 1.7
+    }
+  },
+  "IE00B95PGT31": {
+    "name": "Vanguard FTSE Japan (VJPN)",
+    "short": "VJPN",
+    "group": "ETF",
+    "kind": "Equity ETF",
+    "tickers": ["VJPN.AS", "VJPN.DE"],
+    "currency": "JPY",
+    "region": "Japan",
+    "weights_as_of": "2026 (approx., TipRanks/Morningstar sectors mapped to GICS)",
+    "sectors": {
+      "Industrials": 24.8,
+      "Consumer Discretionary": 15.1,
+      "Information Technology": 14.7,
+      "Financials": 14.5,
+      "Health Care": 7.4,
+      "Communication Services": 7.0,
+      "Consumer Staples": 4.9,
+      "Materials": 4.2,
+      "Real Estate": 4.1,
+      "Utilities": 1.4,
+      "Energy": 0.7
+    }
+  },
+  "IE00B0M62Y33": {
+    "name": "iShares AEX (IAEX)",
+    "short": "IAEX",
+    "group": "ETF",
+    "kind": "Equity ETF",
+    "tickers": ["IAEX.AS"],
+    "currency": "EUR",
+    "region": "Netherlands",
+    "weights_as_of": "2026-10 (approx., estimated from AEX constituents)",
+    "sectors": {
+      "Information Technology": 30.0,
+      "Financials": 17.0,
+      "Energy": 14.0,
+      "Consumer Staples": 11.0,
+      "Consumer Discretionary": 8.0,
+      "Industrials": 7.0,
+      "Materials": 5.0,
+      "Communication Services": 4.0,
+      "Health Care": 3.0,
+      "Real Estate": 1.0
+    }
+  },
+  "IE0007Y8Y157": {
+    "name": "VanEck Quantum Computing (QNTM)",
+    "short": "QNTM",
+    "group": "ETF",
+    "kind": "Thematic ETF",
+    "tickers": ["QUTM.DE", "QNTM.MI", "QNTM.AS"],
+    "currency": "USD",
+    "region": "Global",
+    "weights_as_of": "2026-09-30 (VanEck factsheet)",
+    "sectors": {
+      "Information Technology": 68.8,
+      "Industrials": 8.1,
+      "Consumer Discretionary": 7.9,
+      "Communication Services": 7.9,
+      "Financials": 7.0,
+      "Other": 0.2
+    }
+  },
+  "FR0013416716": {
+    "name": "Amundi Physical Gold ETC",
+    "short": "GOLD",
+    "group": "ETF",
+    "kind": "Gold ETC",
+    "tickers": ["GOLD.PA", "GOLD.AS"],
+    "currency": "USD",
+    "region": "Commodity",
+    "sector": "Commodities"
+  },
+  "GB00BLD4ZL17": {
+    "name": "CoinShares Physical Bitcoin",
+    "short": "BITC",
+    "group": "ETF",
+    "kind": "Crypto ETP",
+    "tickers": ["BITC.AS", "BITC.PA", "BITC.SW"],
+    "currency": "USD",
+    "region": "Crypto",
+    "sector": "Crypto"
+  },
+  "NL0010273215": {
+    "name": "ASML Holding",
+    "short": "ASML",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["ASML.AS"],
+    "currency": "EUR",
+    "region": "Netherlands",
+    "sector": "Information Technology"
+  },
+  "NL0000395903": {
+    "name": "Wolters Kluwer",
+    "short": "WKL",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["WKL.AS"],
+    "currency": "EUR",
+    "region": "Netherlands",
+    "sector": "Industrials"
+  },
+  "NL0009269109": {
+    "name": "Koninklijke Heijmans",
+    "short": "HEIJM",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["HEIJM.AS"],
+    "currency": "EUR",
+    "region": "Netherlands",
+    "sector": "Industrials"
+  },
+  "US0394831020": {
+    "name": "Archer-Daniels-Midland",
+    "short": "ADM",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["ADM"],
+    "currency": "USD",
+    "region": "United States",
+    "sector": "Consumer Staples"
+  },
+  "US3755581036": {
+    "name": "Gilead Sciences",
+    "short": "GILD",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["GILD"],
+    "currency": "USD",
+    "region": "United States",
+    "sector": "Health Care"
+  },
+  "US4385162056": {
+    "name": "Honeywell International",
+    "short": "HON",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["HON"],
+    "currency": "USD",
+    "region": "United States",
+    "sector": "Industrials"
+  },
+  "US4567881085": {
+    "name": "Infosys (ADR)",
+    "short": "INFY",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["INFY"],
+    "currency": "INR",
+    "region": "India",
+    "sector": "Information Technology"
+  },
+  "US56035L1044": {
+    "name": "Main Street Capital",
+    "short": "MAIN",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["MAIN"],
+    "currency": "USD",
+    "region": "United States",
+    "sector": "Financials"
+  },
+  "US65339F1012": {
+    "name": "NextEra Energy",
+    "short": "NEE",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["NEE"],
+    "currency": "USD",
+    "region": "United States",
+    "sector": "Utilities"
+  },
+  "US6748706057": {
+    "name": "Ocean Power Technologies",
+    "short": "OPTT",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["OPTT"],
+    "currency": "USD",
+    "region": "United States",
+    "sector": "Industrials"
+  },
+  "US69404D1081": {
+    "name": "Pacific Biosciences",
+    "short": "PACB",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["PACB"],
+    "currency": "USD",
+    "region": "United States",
+    "sector": "Health Care"
+  },
+  "US92826C8394": {
+    "name": "Visa (Class A)",
+    "short": "V",
+    "group": "Stock",
+    "kind": "Stock",
+    "tickers": ["V"],
+    "currency": "USD",
+    "region": "United States",
+    "sector": "Financials"
+  }
+}

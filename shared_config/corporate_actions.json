@@ -1,0 +1,58 @@
+{
+  "_readme": "Manual handling of DEGIRO corporate-action rows (rows in Transactions.csv without an Order ID). Dates are ISO (YYYY-MM-DD). The cleaner stops with an error on any corporate-action row that is not covered here.",
+  "isin_changes": [
+    {
+      "date": "2021-07-26",
+      "old_isin": "US1714391026",
+      "new_isin": "US5494981039",
+      "old_per_new": 1,
+      "note": "Churchill Capital Corp IV merged into Lucid Group (SPAC merger). 1:1, cost basis carries over."
+    },
+    {
+      "date": "2026-09-14",
+      "old_isin": "US6748705067",
+      "new_isin": "US6748706057",
+      "old_per_new": 30,
+      "note": "Ocean Power Technologies (OPTT) 1-for-30 reverse split. Earlier trades are re-expressed in new-ISIN, split-adjusted quantities; net amounts are untouched."
+    }
+  ],
+  "keep_as_trade": [
+    {
+      "date": "2023-02-22",
+      "isin": "US0310941051",
+      "note": "Amesite reverse split: 4 old shares were cashed out as a fractional remainder (EUR 1.34). Booked as a SELL of the whole position."
+    },
+    {
+      "date": "2022-05-27",
+      "isin": "DE000SD5A3R3",
+      "note": "Alphabet turbo-long certificate knocked out and settled at EUR 0. Booked as a SELL for EUR 0 (full loss)."
+    }
+  ],
+  "ignore": [
+    {
+      "date": "2023-02-23",
+      "isin": "KYG875721634",
+      "note": "Tencent product change (new listing line), +1/-1 at same price, net zero."
+    },
+    {
+      "date": "2023-04-05",
+      "isin": "NL0009269109",
+      "note": "Heijmans stock-dividend election, non-tradeable placeholder +10."
+    },
+    {
+      "date": "2023-05-04",
+      "isin": "NL0009269109",
+      "note": "Heijmans stock dividend settled, placeholder -10, no net shares received."
+    },
+    {
+      "date": "2024-05-03",
+      "isin": "NL0015001ZD8",
+      "note": "Heijmans claim issue, non-tradeable placeholder +15."
+    },
+    {
+      "date": "2024-05-22",
+      "isin": "NL0015001ZD8",
+      "note": "Heijmans stock dividend settled, placeholder -15, no net shares received."
+    }
+  ]
+}

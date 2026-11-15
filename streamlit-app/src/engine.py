@@ -660,17 +660,20 @@ def dividend_stats(df: pd.DataFrame, today: pd.Timestamp | None = None) -> dict:
 
 
 def _payments_per_share(df: pd.DataFrame, today: pd.Timestamp) -> tuple[pd.DataFrame, pd.Series]:
-    """Dividend payments with per_share and shares_then, plus shares held today."""
+    """
+    Dividend payments with per_share, shares_then and clear, plus shares held today.
+    clear is False when the position changed in the 45 days before the pay date:
+    the ex-date is unknown, so it's unclear how many shares the payment was for.
+    """
     p = dividend_payments(df)
     q = daily_quantities(df, end=today)
-    shares = []
+    shares, clear = [], []
     for d, isin in zip(p["date"], p["isin"]):
-        if isin in q.columns:
-            window = q.loc[d - pd.Timedelta(days=45):d, isin]
-            shares.append(float(window.max()) if len(window) else 0.0)
-        else:
-            shares.append(0.0)
+        window = q.loc[d - pd.Timedelta(days=45):d, isin] if isin in q.columns else pd.Series(dtype=float)
+        shares.append(float(window.max()) if len(window) else 0.0)
+        clear.append(bool(len(window)) and float(window.max() - window.min()) < 1e-4)
     p["shares_then"] = shares
+    p["clear"] = clear   # False: shares changed shortly before paying, so per_share is a guess
     p["per_share"] = np.where(p["shares_then"] > 1e-4, p["amount"] / p["shares_then"].replace(0, np.nan), np.nan)
     now = q.iloc[-1] if len(q) else pd.Series(dtype=float)
     return p, now[now > 1e-4]
@@ -769,6 +772,8 @@ def dividends_by_holding(df: pd.DataFrame, forecast: pd.DataFrame, meta: dict | 
     out["last_paid"] = g["date"].max().reindex(out.index)
     out["next_expected"] = fg["date"].min().reindex(out.index)
     return out.sort_values(["held", "forward", "total"], ascending=False)
+
+
 
 # -----------------------------------------------------------------------------
 # Dividend growth

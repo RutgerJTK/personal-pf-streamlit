@@ -18,6 +18,9 @@ NO_ARROW = {"delta_arrow": "off"} if "delta_arrow" in inspect.signature(st.metri
 GREENS = [[0.0, "#78c37f"], [0.25, "#53aa5d"], [0.5, "#368d42"], [0.75, "#22702f"], [1.0, "#0f5323"]]
 CAL_RECEIVED = "#22702f"   # dark green: already paid this month
 CAL_EXPECTED = "#78c37f"   # light green: still to come
+# Diverging pair for growth: blue = raised, red = cut, gray midpoint = unchanged.
+RAISED, CUT, FLAT = "#2a78d6", "#e34948", "#b4b2ac"
+STATUS_COLOR = {"raised": RAISED, "unchanged": FLAT, "cut": CUT, "unknown": FLAT}
 
 
 def eur(x: float, digits: int = 2) -> str:
@@ -201,6 +204,115 @@ else:
     st.caption("Dates repeat last year's pay dates, so expect a few days' drift. Amounts are last year's "
                "net dividend per share times the shares you hold now, without growth. A holding with less "
                "than a year of history only repeats what it paid so far (monthly payers are extended).")
+
+# --- Dividend growth ---------------------------------------------------------------
+st.subheader("Dividend growth")
+growth, gsum = engine.dividend_growth(df, meta, today)
+history = engine.dividend_per_share_history(df, meta, today)
+if growth.empty:
+    st.info("None of your current holdings pays a dividend yet.")
+else:
+    income_growth = stats["ttm"] / stats["ttm_prev"] - 1 if stats["ttm_prev"] else float("nan")
+    k = st.columns(3)
+    organic = gsum["organic"]
+    k[0].metric("Organic dividend growth", pct(organic, sign=True) if organic == organic else "–",
+                help="How much more the last 12 months' dividends paid per share than the same payments a year "
+                     "earlier, weighted by the shares you hold now. This is growth from raises alone, "
+                     "without buying anything.")
+    k[1].metric("Raised · unchanged · cut", f"{gsum['raised']} · {gsum['unchanged']} · {gsum['cut']}",
+                f"{gsum['unknown']} not comparable yet" if gsum["unknown"] else None, delta_color="off", **NO_ARROW,
+                help="Per holding you own, last 12 months vs a year earlier. Within ±2% counts as unchanged.")
+    if income_growth == income_growth and organic == organic:
+        k[2].metric("Your dividend income, last 12 months", pct(income_growth, sign=True),
+                    f"{pct(organic, sign=True)} from raises, the rest from buying and selling",
+                    delta_color="off", **NO_ARROW,
+                    help="Total dividends received vs the 12 months before. Mostly driven by new money; "
+                         "organic growth is the part that comes in without it.")
+
+    g = growth.dropna(subset=["ttm_growth"]).sort_values("ttm_growth")
+    fig = go.Figure(go.Bar(
+        x=g["ttm_growth"], y=g["short"], orientation="h",
+        marker_color=[STATUS_COLOR[x] for x in g["status"]],
+        text=[pct(v, sign=True) + ("" if b == "12 months" else f" ({b[:4]} vs {int(b[:4]) - 1})")
+              for v, b in zip(g["ttm_growth"], g["basis"])], textposition="outside", cliponaxis=False,
+        customdata=list(zip(g["basis"], g["matched"])),
+        hovertemplate="%{y}: %{x:+.1%}<br>%{customdata[0]}, %{customdata[1]} matched payment(s)<extra></extra>",
+    ))
+    pad = max(abs(g["ttm_growth"].min()), abs(g["ttm_growth"].max())) * 1.25
+    fig.update_layout(height=60 + 28 * len(g), margin=dict(l=0, r=0, t=10, b=0), bargap=0.3,
+                      xaxis=dict(tickformat="+.0%", range=[min(-0.05, g["ttm_growth"].min() * 1.35), pad],
+                                 zeroline=True, zerolinecolor="#8a8986", title=None),
+                      yaxis=dict(title=None))
+    st.plotly_chart(fig, width="stretch")
+    st.caption("Dividend per share, last 12 months vs the same payments a year earlier (or the last two "
+               "calendar years where that's all there is). Blue = raised, red = cut, gray = within ±2%.")
+
+    # Drill-down per holding
+    options = list(growth.index)
+    pick = st.selectbox("Look at one holding", options, format_func=lambda i: growth.loc[i, "short"],
+                        index=options.index(growth["income_now"].idxmax()) if growth["income_now"].max() > 0 else 0)
+    annual = engine.annual_dividend_per_share(history, pick, df, today)
+    pay = history[(history["isin"] == pick) & history["per_share"].notna()]
+    a, b = st.columns(2, gap="large")
+    with a:
+        st.markdown("**Dividend per share per year**")
+        full = annual[~annual["partial"]]
+        part = annual[annual["partial"]]
+        fig = go.Figure()
+        fig.add_bar(x=full.index.astype(str), y=full["dps"], name="Full year", marker_color=RAISED,
+                    text=["" if pd.isna(v) else pct(v, sign=True) for v in full["growth"]], textposition="outside",
+                    cliponaxis=False, customdata=full["payments"],
+                    hovertemplate="%{x}: %{y:€,.3f} per share<br>%{customdata} payments<extra></extra>")
+        fig.add_bar(x=part.index.astype(str), y=part["dps"], name="Partial year",
+                    marker=dict(color="rgba(42,120,214,0.15)", line=dict(color=RAISED, width=1.5),
+                                pattern=dict(shape="/", fgcolor=RAISED, size=6)),
+                    customdata=part["payments"],
+                    hovertemplate="%{x} (partial): %{y:€,.3f} per share<br>%{customdata} payments<extra></extra>")
+        fig.update_layout(barmode="overlay", xaxis=dict(type="category", categoryorder="category ascending"))
+        _layout(fig, 300).update_yaxes(tickformat=",.2f")
+        st.plotly_chart(fig, width="stretch")
+    with b:
+        st.markdown("**Every payment, per share**")
+        clear, unclear = pay[pay["clear"]], pay[~pay["clear"]]
+        fig = go.Figure()
+        fig.add_scatter(x=clear["date"], y=clear["per_share"], mode="lines+markers", name="Payment",
+                        line=dict(color=RAISED, width=2), marker=dict(size=8, color=RAISED),
+                        customdata=clear["growth"],
+                        hovertemplate="%{x|%d %b %Y}: %{y:€,.4f}<br>vs a year earlier: %{customdata:+.1%}<extra></extra>")
+        if len(unclear):
+            fig.add_scatter(x=unclear["date"], y=unclear["per_share"], mode="markers", name="Shares changed just before",
+                            marker=dict(size=8, color="rgba(0,0,0,0)", line=dict(color=RAISED, width=2)),
+                            hovertemplate="%{x|%d %b %Y}: %{y:€,.4f} (estimate)<extra></extra>")
+        _layout(fig, 300).update_yaxes(tickformat=",.2f", rangemode="tozero")
+        st.plotly_chart(fig, width="stretch")
+
+    cc = st.column_config
+    tbl = growth.assign(
+        latest_growth=growth["latest_growth"] * 100, ttm_growth=growth["ttm_growth"] * 100,
+        long_run=["" if pd.isna(c) else f"{c:+.1%} ({y})" for c, y in zip(growth["cagr"], growth["cagr_years"])],
+    )
+    st.dataframe(
+        tbl[["short", "latest_date", "latest_ps", "latest_growth", "ttm_growth", "basis", "long_run"]],
+        hide_index=True, width="stretch",
+        column_config={
+            "short": cc.TextColumn("Holding"),
+            "latest_date": cc.DateColumn("Last comparable payment", format="D MMM YYYY",
+                                         help="Latest payment with a known share count (see the note below)."),
+            "latest_ps": cc.NumberColumn("Per share (net)", format="€%.4f"),
+            "latest_growth": cc.NumberColumn("vs a year earlier", format="%+.1f%%",
+                                             help="That one payment vs the same payment a year before."),
+            "ttm_growth": cc.NumberColumn("Growth", format="%+.1f%%",
+                                          help="All matched payments of the last 12 months vs a year earlier."),
+            "basis": cc.TextColumn("Based on"),
+            "long_run": cc.TextColumn("Per year (long run)",
+                                      help="Average yearly growth of dividend per share over the full calendar "
+                                           "years you held it. Needs at least two full years."),
+        },
+    )
+    st.caption("Per-share amounts are net of withholding tax and in euros, so for US and other non-euro payers a "
+               "weaker dollar shows up as a cut (MAIN's dividend rose in dollars). Payments where you bought or sold "
+               "shortly before the pay date are left out of the growth figures, because the ex-date isn't in the "
+               "export; they show as open circles.")
 
 # --- Per holding -----------------------------------------------------------------
 st.subheader("Per holding")

@@ -541,3 +541,373 @@ def shadow_portfolio(daily: pd.DataFrame, bench: pd.Series, start: pd.Timestamp)
     flows.iloc[0] += float(before["value"].iloc[-1]) if len(before) else 0.0
     units = (flows / b).fillna(0.0).cumsum()
     return units * b
+
+# =============================================================================
+# Dividends
+# =============================================================================
+# All amounts are net: after withholding tax, converted to EUR by the cleaner.
+# Dividends are dated on their pay date (the cleaner uses DEGIRO's value date).
+#
+# Forecast (next 12 months, open positions only)
+#   per share   each past payment / shares held around its ex-date. The ex-date
+#               is not in the export, so the most shares held in the 45 days
+#               before the pay date is used.
+#   >= 1 year of payments
+#               every payment of the last ~12 months repeats one year later at
+#               the same amount per share, times the shares held now. A payment
+#               whose 'next year' already arrived (pay dates drift by a few days)
+#               is not counted twice.
+#   < 1 year    with 4+ payments the rhythm is read from the gaps between them
+#               (monthly / quarterly / half-yearly / yearly) and the latest
+#               amount per share is repeated at that rhythm. With fewer, two
+#               payments can't tell quarterly from half-yearly, so only the
+#               payments seen so far are repeated a year later (cautious).
+#   Positions that have not paid for 400+ days are treated as non-payers.
+#   No dividend growth is assumed, so the forecast is on the cautious side.
+_DIV_LOOKBACK = 380          # days of history that make up 'last year's schedule'
+_DIV_SAME_PAYMENT = 25       # days: two payments this close are the same event
+_DIV_STOPPED = 400           # days without payment: no longer a payer
+
+
+def dividend_payments(df: pd.DataFrame, meta: dict | None = None) -> pd.DataFrame:
+    """One row per dividend payment: date, isin, amount, short, group."""
+    meta = meta or {}
+    d = df[df["action"] == "DIVIDEND"]
+    out = pd.DataFrame({
+        "date": d["datetime"].dt.normalize().to_numpy(),
+        "isin": d["isin"].to_numpy(),
+        "amount": d["net_amount"].to_numpy(dtype=float),
+    })
+    out["short"] = [meta.get(i, {}).get("short") or meta.get(i, {}).get("name") or i for i in out["isin"]]
+    out["group"] = [meta.get(i, {}).get("group", "Unmapped") for i in out["isin"]]
+    return out.sort_values("date", kind="stable").reset_index(drop=True)
+
+
+def dividends_by_year(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.DataFrame:
+    """
+    Indexed by calendar year:
+      received   net dividends that year
+      payments   number of payments
+      payers     number of different holdings that paid
+      growth     change vs the previous year (NaN for the first year). For the
+                 current year: vs the same stretch of last year (1 Jan - today's date).
+      per_month  received / 12, or / months elapsed for the current year
+      partial    True for the current (unfinished) year
+    """
+    today = (today or pd.Timestamp.today()).normalize()
+    p = dividend_payments(df)
+    if p.empty:
+        return pd.DataFrame(columns=["received", "payments", "payers", "growth", "per_month", "partial"])
+    years = range(p["date"].dt.year.min(), max(today.year, p["date"].dt.year.max()) + 1)
+    g = p.groupby(p["date"].dt.year)
+    out = pd.DataFrame({
+        "received": g["amount"].sum(),
+        "payments": g.size(),
+        "payers": g["isin"].nunique(),
+    }).reindex(years).fillna({"received": 0.0, "payments": 0, "payers": 0})
+    out = out.astype({"payments": int, "payers": int})
+    out["growth"] = out["received"] / out["received"].shift(1).replace(0, np.nan) - 1
+    out["partial"] = out.index == today.year
+    if today.year in out.index and today.year - 1 in out.index:
+        s = dividend_stats(df, today)
+        out.loc[today.year, "growth"] = s["ytd"] / s["ytd_prev"] - 1 if s["ytd_prev"] else np.nan
+    months = np.where(out["partial"], today.month, 12)
+    out["per_month"] = out["received"] / months
+    out.index.name = "year"
+    return out
+
+
+def dividends_by_month(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.DataFrame:
+    """
+    Every month from the first dividend to the current month:
+      received   net dividends that month
+      ttm        sum of the last 12 months (NaN until 12 months exist)
+      avg_12m    ttm / 12, i.e. the 'typical month' on the same scale as received
+    """
+    today = (today or pd.Timestamp.today()).normalize()
+    p = dividend_payments(df)
+    if p.empty:
+        return pd.DataFrame(columns=["received", "ttm", "avg_12m"])
+    m = p.groupby(p["date"].dt.to_period("M"))["amount"].sum()
+    idx = pd.period_range(m.index.min(), max(m.index.max(), today.to_period("M")), freq="M")
+    m = m.reindex(idx, fill_value=0.0)
+    out = pd.DataFrame({"received": m.to_numpy()}, index=idx.to_timestamp())
+    out["ttm"] = out["received"].rolling(12, min_periods=12).sum()
+    out["avg_12m"] = out["ttm"] / 12
+    out.index.name = "month"
+    return out
+
+
+def dividend_stats(df: pd.DataFrame, today: pd.Timestamp | None = None) -> dict:
+    """
+    total      all-time net dividends
+    ytd        this calendar year so far; ytd_prev the same stretch of last year
+    ttm        last 365 days; ttm_prev the 365 days before that
+    """
+    today = (today or pd.Timestamp.today()).normalize()
+    p = dividend_payments(df)
+    s, a = p["date"], p["amount"]
+    jan1 = pd.Timestamp(year=today.year, month=1, day=1)
+    last_year_today = today - pd.DateOffset(years=1)
+    y = pd.Timedelta(days=365)
+    return {
+        "total": float(a.sum()),
+        "ytd": float(a[(s >= jan1) & (s <= today)].sum()),
+        "ytd_prev": float(a[(s >= jan1 - pd.DateOffset(years=1)) & (s <= last_year_today)].sum()),
+        "ttm": float(a[(s > today - y) & (s <= today)].sum()),
+        "ttm_prev": float(a[(s > today - 2 * y) & (s <= today - y)].sum()),
+    }
+
+
+def _payments_per_share(df: pd.DataFrame, today: pd.Timestamp) -> tuple[pd.DataFrame, pd.Series]:
+    """Dividend payments with per_share and shares_then, plus shares held today."""
+    p = dividend_payments(df)
+    q = daily_quantities(df, end=today)
+    shares = []
+    for d, isin in zip(p["date"], p["isin"]):
+        if isin in q.columns:
+            window = q.loc[d - pd.Timedelta(days=45):d, isin]
+            shares.append(float(window.max()) if len(window) else 0.0)
+        else:
+            shares.append(0.0)
+    p["shares_then"] = shares
+    p["per_share"] = np.where(p["shares_then"] > 1e-4, p["amount"] / p["shares_then"].replace(0, np.nan), np.nan)
+    now = q.iloc[-1] if len(q) else pd.Series(dtype=float)
+    return p, now[now > 1e-4]
+
+
+def _snap_months(median_gap_days: float) -> int:
+    """Nearest of monthly / quarterly / half-yearly / yearly."""
+    options = np.array([1, 3, 6, 12])
+    return int(options[np.abs(options * 30.44 - median_gap_days).argmin()])
+
+
+def dividend_forecast(df: pd.DataFrame, meta: dict | None = None,
+                      today: pd.Timestamp | None = None, horizon_days: int = 365) -> pd.DataFrame:
+    """
+    Expected payments in (today, today + horizon_days] for positions held today.
+    Columns: date, isin, short, group, amount, per_share, shares, method.
+    method is 'last year' or 'rhythm' (see the notes above).
+    """
+    meta = meta or {}
+    today = (today or pd.Timestamp.today()).normalize()
+    end = today + pd.Timedelta(days=horizon_days)
+    pay, held = _payments_per_share(df, today)
+    rows = []
+    for isin, shares in held.items():
+        p = pay[(pay["isin"] == isin) & pay["per_share"].notna()]
+        if p.empty or p["date"].max() < today - pd.Timedelta(days=_DIV_STOPPED):
+            continue
+        gaps = p["date"].diff().dt.days.dropna()
+        gaps = gaps[gaps >= 20]                      # ignore supplementals right after a regular payment
+        if p["date"].min() <= today - pd.Timedelta(days=330) or len(gaps) < 3:
+            recent = p[p["date"] > today - pd.Timedelta(days=_DIV_LOOKBACK)]
+            for r in recent.itertuples(index=False):
+                nxt = r.date + pd.DateOffset(years=1)
+                already = (p["date"] - nxt).abs() <= pd.Timedelta(days=_DIV_SAME_PAYMENT)
+                if already.any():
+                    continue
+                nxt = max(nxt, today + pd.Timedelta(days=1))  # a bit late this year: due any day
+                if nxt <= end:
+                    rows.append((nxt, isin, r.per_share, shares, "last year"))
+        else:
+            step = pd.DateOffset(months=_snap_months(gaps.median()))
+            per_share = float(p["per_share"].tail(3).median())
+            nxt = p["date"].max() + step
+            while nxt <= today:
+                nxt += step
+            while nxt <= end:
+                rows.append((nxt, isin, per_share, shares, "rhythm"))
+                nxt += step
+    out = pd.DataFrame(rows, columns=["date", "isin", "per_share", "shares", "method"])
+    out["amount"] = out["per_share"] * out["shares"]
+    out["short"] = [meta.get(i, {}).get("short") or meta.get(i, {}).get("name") or i for i in out["isin"]]
+    out["group"] = [meta.get(i, {}).get("group", "Unmapped") for i in out["isin"]]
+    cols = ["date", "isin", "short", "group", "amount", "per_share", "shares", "method"]
+    return out[cols].sort_values("date", kind="stable").reset_index(drop=True)
+
+
+def dividend_calendar(forecast: pd.DataFrame, today: pd.Timestamp | None = None, months: int = 12) -> pd.DataFrame:
+    """Expected EUR per holding (rows, by short name) per month (columns), starting this month."""
+    today = (today or pd.Timestamp.today()).normalize()
+    cols = pd.period_range(today.to_period("M"), periods=months, freq="M")
+    if forecast.empty:
+        return pd.DataFrame(columns=cols.to_timestamp())
+    f = forecast.assign(month=forecast["date"].dt.to_period("M"))
+    cal = f.pivot_table(index="short", columns="month", values="amount", aggfunc="sum")
+    cal = cal.reindex(columns=cols).fillna(0.0)
+    cal.columns = cols.to_timestamp()
+    return cal.loc[cal.sum(axis=1).sort_values(ascending=False).index]
+
+
+def dividends_by_holding(df: pd.DataFrame, forecast: pd.DataFrame, meta: dict | None = None,
+                         today: pd.Timestamp | None = None) -> pd.DataFrame:
+    """
+    One row per holding that ever paid or is held, indexed by isin:
+    short, group, held, total, ttm, forward (next 12 months), cost_basis,
+    yield_on_cost (forward / cost_basis), per_year (payments in the last year),
+    last_paid, next_expected.
+    """
+    meta = meta or {}
+    today = (today or pd.Timestamp.today()).normalize()
+    p = dividend_payments(df, meta)
+    pos = open_positions(df)
+    isins = list(dict.fromkeys(list(pos.index) + list(p["isin"].unique())))
+    g = p.groupby("isin")
+    last_year = p[p["date"] > today - pd.Timedelta(days=365)].groupby("isin")
+    fg = forecast.groupby("isin")
+    out = pd.DataFrame(index=pd.Index(isins, name="isin"))
+    out["short"] = [meta.get(i, {}).get("short") or meta.get(i, {}).get("name") or i for i in out.index]
+    out["group"] = [meta.get(i, {}).get("group", "Unmapped") for i in out.index]
+    out["held"] = out.index.isin(pos.index)
+    out["total"] = g["amount"].sum().reindex(out.index).fillna(0.0)
+    out["ttm"] = last_year["amount"].sum().reindex(out.index).fillna(0.0)
+    out["forward"] = fg["amount"].sum().reindex(out.index).fillna(0.0)
+    out["cost_basis"] = pos["cost_basis"].reindex(out.index)
+    out["yield_on_cost"] = out["forward"] / out["cost_basis"]
+    out["per_year"] = last_year.size().reindex(out.index).fillna(0).astype(int)
+    out["last_paid"] = g["date"].max().reindex(out.index)
+    out["next_expected"] = fg["date"].min().reindex(out.index)
+    return out.sort_values(["held", "forward", "total"], ascending=False)
+
+# -----------------------------------------------------------------------------
+# Dividend growth
+# -----------------------------------------------------------------------------
+# Like-for-like  each payment is compared with the same payment one year earlier
+#                (pay date within 25 days of a year before; 45 days for holdings
+#                that pay twice a year or less, whose dates drift more). That handles
+#                seasonal patterns (a big June payment vs a small March one),
+#                drifting pay dates and special/supplemental dividends without
+#                needing to know the payment frequency.
+# Only 'clear' payments are used (see _payments_per_share), so a buy right
+# before a pay date can't show up as a fake cut.
+# Everything is net and in EUR: currency moves and withholding-tax changes show
+# up as growth or cuts too.
+_DIV_FLAT = 0.02            # within +/- 2% counts as unchanged
+
+
+def dividend_per_share_history(df: pd.DataFrame, meta: dict | None = None,
+                               today: pd.Timestamp | None = None) -> pd.DataFrame:
+    """
+    One row per payment: date, isin, short, amount, shares_then, per_share, clear,
+    prev_date / prev_per_share (the matching payment a year earlier, if any) and
+    growth (per_share / prev_per_share - 1). Matching uses clear payments only.
+    """
+    meta = meta or {}
+    today = (today or pd.Timestamp.today()).normalize()
+    p, _ = _payments_per_share(df, today)
+    p["short"] = [meta.get(i, {}).get("short") or meta.get(i, {}).get("name") or i for i in p["isin"]]
+    p["prev_date"] = pd.NaT
+    p["prev_per_share"] = np.nan
+    ok = p["clear"] & p["per_share"].notna()
+    for isin, g in p[ok].groupby("isin"):
+        dates = g["date"]
+        all_dates = p.loc[p["isin"] == isin, "date"]
+        years_paying = max((all_dates.max() - all_dates.min()).days / 365.25, 1.0)
+        per_year = len(all_dates) / years_paying
+        tol = pd.Timedelta(days=_DIV_SAME_PAYMENT if per_year > 2.5 else 45)
+        for idx, d in dates.items():
+            target = d - pd.DateOffset(years=1)
+            gap = (dates - target).abs()
+            gap = gap[(gap <= tol) & (dates < d - pd.Timedelta(days=300))]
+            if len(gap):
+                j = gap.idxmin()
+                p.loc[idx, "prev_date"] = p.loc[j, "date"]
+                p.loc[idx, "prev_per_share"] = p.loc[j, "per_share"]
+    p["growth"] = p["per_share"] / p["prev_per_share"] - 1
+    return p
+
+
+def annual_dividend_per_share(history: pd.DataFrame, isin: str, df: pd.DataFrame,
+                              today: pd.Timestamp | None = None) -> pd.DataFrame:
+    """
+    Dividend per share per calendar year for one holding:
+    dps, payments, uncertain (some payments not 'clear'), partial (not held the
+    whole year, or the current year), growth (vs previous year, full years only).
+    """
+    today = (today or pd.Timestamp.today()).normalize()
+    h = history[(history["isin"] == isin) & history["per_share"].notna()]
+    if h.empty:
+        return pd.DataFrame(columns=["dps", "payments", "uncertain", "partial", "growth"])
+    g = h.groupby(h["date"].dt.year)
+    out = pd.DataFrame({"dps": g["per_share"].sum(), "payments": g.size(),
+                        "uncertain": ~g["clear"].all()})
+    q = daily_quantities(df, end=today)
+    held = q[isin] > 1e-4 if isin in q.columns else pd.Series(dtype=bool)
+    full = {y: bool(held[str(y)].all()) and len(held[str(y)]) >= 365 and y < today.year for y in out.index}
+    out["partial"] = [not full[y] for y in out.index]
+    prev = out["dps"].shift(1).where(~out["partial"].shift(1, fill_value=True))
+    out["growth"] = (out["dps"] / prev - 1).where(~out["partial"])
+    out.index.name = "year"
+    return out
+
+
+def dividend_growth(df: pd.DataFrame, meta: dict | None = None,
+                    today: pd.Timestamp | None = None) -> tuple[pd.DataFrame, dict]:
+    """
+    Per held holding that pays (indexed by isin):
+      short, latest_date, latest_ps, latest_growth   most recent clear payment
+                                                     and its change vs a year earlier
+      ttm_growth   like-for-like: last 12 months' matched payments vs the same
+                   payments a year earlier (sum of per-share amounts). When no
+                   payment matches, the latest full calendar year vs the one
+                   before; basis says which ('12 months' / 'calendar year').
+      matched      number of matched payments behind ttm_growth
+      cagr         per-year growth of dividend per share over full calendar years
+                   (NaN with fewer than 2 full years), cagr_years its span
+      status       'raised' / 'unchanged' / 'cut' / 'unknown' (from ttm_growth)
+      income_now / income_before   matched payments x shares held now, in EUR
+    And a summary dict:
+      organic      income_now / income_before - 1 over all holdings: how much your
+                   dividends grew from raises alone, with the shares you have now
+      raised / unchanged / cut / unknown   counts
+    """
+    meta = meta or {}
+    today = (today or pd.Timestamp.today()).normalize()
+    hist = dividend_per_share_history(df, meta, today)
+    _, held = _payments_per_share(df, today)
+    rows = []
+    for isin, shares in held.items():
+        h = hist[hist["isin"] == isin]
+        if h.empty or h["date"].max() < today - pd.Timedelta(days=_DIV_STOPPED):
+            continue
+        clear = h[h["clear"] & h["per_share"].notna()]
+        recent = clear[(clear["date"] > today - pd.Timedelta(days=365)) & clear["prev_per_share"].notna()]
+        now, before = recent["per_share"].sum(), recent["prev_per_share"].sum()
+        ttm = now / before - 1 if before else np.nan
+        annual = annual_dividend_per_share(hist, isin, df, today)
+        full = annual[~annual["partial"]]
+        basis = "12 months"
+        if np.isnan(ttm) and full["growth"].notna().any():
+            ttm, basis = float(full["growth"].dropna().iloc[-1]), f"{full['growth'].dropna().index[-1]} vs year before"
+        cagr = ((full["dps"].iloc[-1] / full["dps"].iloc[0]) ** (1 / (len(full) - 1)) - 1
+                if len(full) >= 2 and full["dps"].iloc[0] > 0 else np.nan)
+        last = clear.iloc[-1] if len(clear) else None
+        if np.isnan(ttm):
+            status = "unknown"
+        elif ttm > _DIV_FLAT:
+            status = "raised"
+        elif ttm < -_DIV_FLAT:
+            status = "cut"
+        else:
+            status = "unchanged"
+        rows.append({
+            "isin": isin, "short": h["short"].iloc[0],
+            "latest_date": last["date"] if last is not None else pd.NaT,
+            "latest_ps": last["per_share"] if last is not None else np.nan,
+            "latest_growth": last["growth"] if last is not None else np.nan,
+            "ttm_growth": ttm, "basis": basis, "matched": len(recent),
+            "cagr": cagr, "cagr_years": f"{full.index[0]}–{full.index[-1]}" if len(full) >= 2 else "",
+            "status": status, "income_now": now * shares, "income_before": before * shares,
+        })
+    cols = ["isin", "short", "latest_date", "latest_ps", "latest_growth", "ttm_growth", "basis", "matched",
+            "cagr", "cagr_years", "status", "income_now", "income_before"]
+    out = pd.DataFrame(rows, columns=cols).set_index("isin").sort_values("ttm_growth", ascending=False)
+    before = out["income_before"].sum()
+    counts = out["status"].value_counts()
+    summary = {
+        "organic": float(out["income_now"].sum() / before - 1) if before else float("nan"),
+        "raised": int(counts.get("raised", 0)), "unchanged": int(counts.get("unchanged", 0)),
+        "cut": int(counts.get("cut", 0)), "unknown": int(counts.get("unknown", 0)),
+    }
+    return out, summary

@@ -221,7 +221,8 @@ def concentration(holdings: pd.DataFrame) -> dict:
 # Benchmark: portfolio value history, time-weighted return, comparisons
 # =============================================================================
 # value          holdings at market (daily close, EUR) + cash. Cash is rebuilt
-#                from the log: deposits - buys + sells + dividends.
+#                from the log: deposits - buys + sells + dividends + fees, then
+#                tied to the export's CASH balance (see daily_cash).
 # TWR            time-weighted return. Each day's return is
 #                    r_t = V_t / (V_{t-1} + F_t) - 1
 #                where F_t is that day's deposit (treated as arriving at the start
@@ -258,14 +259,28 @@ def daily_quantities(df: pd.DataFrame, end: pd.Timestamp | None = None) -> pd.Da
     return q.where(q.abs() > 1e-4, 0.0)
 
 
-def daily_cash(df: pd.DataFrame, end: pd.Timestamp | None = None) -> pd.DataFrame:
-    """Daily cash balance and external flows (deposits), in EUR."""
-    sign = {"DEPOSIT": 1.0, "BUY": -1.0, "SELL": 1.0, "DIVIDEND": 1.0}
+def daily_cash(df: pd.DataFrame, end: pd.Timestamp | None = None, reconcile: bool = True) -> pd.DataFrame:
+    """
+    Daily cash balance and external flows (deposits), in EUR.
+
+    Rebuilt from the log (deposits - buys + sells + dividends + fees). With
+    `reconcile`, whatever still differs from the CASH balance of the export
+    (cent-level FX rounding on dividends, fees in other currencies, or all fees
+    for files made before FEE rows existed) is booked on the export day, in
+    `correction`, so the line ends on the real balance like the Holdings page.
+    """
+    sign = {"DEPOSIT": 1.0, "BUY": -1.0, "SELL": 1.0, "DIVIDEND": 1.0, "FEE": 1.0}
     d = df.assign(day=df["datetime"].dt.normalize(),
                   cash=df["net_amount"] * df["action"].map(sign).fillna(0.0),
                   flow=np.where(df["action"] == "DEPOSIT", df["net_amount"], 0.0))
     g = d.groupby("day")[["cash", "flow"]].sum().reindex(_days(df, end), fill_value=0.0)
-    return pd.DataFrame({"cash": g["cash"].cumsum(), "flow": g["flow"]})
+    g["correction"] = 0.0
+    actual, as_of = cash_balance(df) if reconcile else (None, None)
+    if actual is not None:
+        day = as_of.normalize()
+        g.loc[day, "correction"] = round(actual - g.loc[:day, "cash"].sum(), 2)
+    return pd.DataFrame({"cash": (g["cash"] + g["correction"]).cumsum(), "flow": g["flow"],
+                         "correction": g["correction"]})
 
 
 def trade_prices(df: pd.DataFrame) -> pd.DataFrame:
@@ -347,7 +362,7 @@ def portfolio_history(df: pd.DataFrame, prices: pd.DataFrame | None = None,
              weekends are forward-filled. ISINs without a column, or days before
              their history starts, use the last trade price.
 
-    Returns {"daily": DataFrame[holdings, cash, value, flow, invested, priced_share],
+    Returns {"daily": DataFrame[holdings, cash, flow, cash_correction, value, invested, priced_share],
              "factors": Series, "coverage": DataFrame}.
     """
     q = daily_quantities(df, end)
@@ -368,6 +383,7 @@ def portfolio_history(df: pd.DataFrame, prices: pd.DataFrame | None = None,
     priced_value = (q * mkt).sum(axis=1, min_count=1).fillna(0.0)
     daily = pd.DataFrame({
         "holdings": holdings, "cash": cash["cash"], "flow": cash["flow"],
+        "cash_correction": cash["correction"],
     })
     daily["value"] = daily["holdings"] + daily["cash"]
     daily["invested"] = daily["flow"].cumsum()

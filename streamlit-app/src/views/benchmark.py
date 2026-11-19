@@ -372,6 +372,18 @@ with tabs[names[5]]:
                          })
             st.caption("To fill a gap, add the ISIN with its Yahoo `tickers` to `shared-config/isin_map.json`. "
                        "Closed positions only need `short` and `tickers`; the Holdings page ignores them.")
+        fees = float(df.loc[df["action"] == "FEE", "net_amount"].sum())
+        fix = daily.loc[daily["cash_correction"] != 0, "cash_correction"]
+        if fees or len(fix):
+            msg = (f"**Cash:** {eur(abs(fees))} net account {'costs' if fees < 0 else 'income'} "
+                   "(connection fees, interest) included" if fees else "**Cash:** no fee rows in this file")
+            if len(fix):
+                msg += (f"; the rebuilt cash was {eur(abs(fix.iloc[0]))} "
+                        f"{'below' if fix.iloc[0] > 0 else 'above'} your exported balance, "
+                        f"corrected on {fix.index[0]:%d %b %Y}")
+                if abs(fix.iloc[0]) >= 10:
+                    msg += " (re-run the cleaning pipeline so fees land on their own dates)"
+            st.caption(msg + ".")
         odd = hist["factors"]
         if len(odd):
             st.caption("Price history rescaled to match your trade prices (usually a later split): "
@@ -407,12 +419,16 @@ with tabs[names[5]]:
             "today) − 1`. Deposits are not gains, and when you deposited does not matter, so it compares fairly "
             "with an index.\n"
             "- **Portfolio value** = shares × daily close in EUR + cash. Cash is rebuilt from the log "
-            "(deposits − buys + sells + dividends), so idle cash counts, as it would in reality.\n"
+            "(deposits − buys + sells + dividends − fees, interest included), so idle cash counts, as it "
+            "would in reality, and costs count against your return. It ends on the cash balance of your "
+            "export, the same figure the Holdings page uses.\n"
             "- **Money-weighted return** (XIRR) does count your timing: it is the yearly rate that turns your "
             "deposits into today's value.\n"
             "- **Benchmarks** use accumulating ETFs where possible, so their dividends are reinvested, like yours. "
             "Price-only indices (symbols starting with `^`) understate returns by roughly the dividend yield.\n"
             "- **Volatility, correlation and beta** use weekly returns, which avoids mismatches between markets "
             "that close at different times.\n"
-            "- Not included: DEGIRO's yearly connection fees and interest, which the cleaner leaves out."
+            "- **Fees** in the trade amounts (transaction costs, AutoFX) and on their own date (yearly "
+            "connection fees, real-time price fees, interest) both lower the portfolio's return. Benchmarks "
+            "carry only their own fund costs."
         )

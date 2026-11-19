@@ -194,3 +194,22 @@ def test_no_cash_row_without_account_rows(tmp_path, rules):
     tx = [_tx_row("01-03-2025", "09:30", FAKE_ISIN_B, 5, "-503,00", "a")]
     out, _ = _run(tmp_path, tx, [], rules)
     assert "CASH" not in set(out.action)
+
+def test_fees_and_interest_become_signed_fee_rows_per_day(tmp_path, rules):
+    acc = [  # newest first, like DEGIRO
+        _acc_row("13-11-2026", "17:31", "13-11-2026", "", "Flatex Interest Income", "EUR", "0,00"),
+        _acc_row("02-01-2026", "08:00", "31-12-2025", "", "DEGIRO courtesy", "EUR", "2,50"),
+        _acc_row("02-01-2026", "08:00", "31-12-2025", "", "DEGIRO Aansluitingskosten 2026 (Nasdaq - NDQ)", "EUR", "-2,50"),
+        _acc_row("02-01-2026", "08:00", "31-12-2025", "", "DEGIRO Aansluitingskosten 2026 (Xetra - XET)", "EUR", "-2,50"),
+        _acc_row("03-03-2025", "07:00", "28-02-2025", "", "Rente", "EUR", "-0,03"),
+        _acc_row("01-03-2025", "09:00", "01-03-2025", "", "iDEAL storting", "EUR", "100,00"),
+    ]
+    out, report = _run(tmp_path, [], acc, rules)
+    fee = out[out.action == "FEE"]
+    assert fee.datetime.tolist() == ["2025-03-03 00:00:00", "2026-01-02 00:00:00"]
+    assert fee.net_amount.tolist() == [-0.03, -2.50]       # same-day rows netted, zero interest dropped
+    assert (fee.quantity == 0).all() and (fee["isin"] == "").all()
+    # deposits + fees add up to the exported cash balance
+    cash = out.loc[out.action == "CASH", "net_amount"].iloc[0]
+    assert cash == pytest.approx(out.loc[out.action.isin(["DEPOSIT", "FEE"]), "net_amount"].sum())
+    assert any("fee/interest" in n for n in report.notes)

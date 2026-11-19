@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import engine  # noqa: E402
@@ -122,9 +123,27 @@ def test_cash_balance_takes_newest_cash_row():
     })], ignore_index=True)
     amount, as_of = engine.cash_balance(df)
     assert amount == 71.37 and as_of == pd.Timestamp("2025-01-07 17:00")
-    # CASH rows must not count as deposits or move the rebuilt cash line
+    # CASH rows never count as deposits, and only move the cash line when reconciling
     assert engine.summary(df)["net_invested"] == 150
-    assert engine.daily_cash(df)["cash"].iloc[-1] == engine.daily_cash(_df())["cash"].iloc[-1]
+    assert engine.daily_cash(df, reconcile=False)["cash"].iloc[-1] == engine.daily_cash(_df())["cash"].iloc[-1]
+
+
+def test_daily_cash_counts_fees_and_ends_on_exported_balance():
+    base = _df()
+    rebuilt = engine.daily_cash(base)["cash"].iloc[-1]
+    fee = pd.DataFrame({
+        "datetime": pd.to_datetime(["2025-01-04 00:00", "2025-01-06 17:00"]),
+        "isin": ["", ""], "action": ["FEE", "CASH"],
+        "quantity": [0.0, 0.0], "net_amount": [-2.50, rebuilt - 2.50 - 0.30],
+    })
+    df = pd.concat([base, fee], ignore_index=True).sort_values("datetime", kind="stable")
+    c = engine.daily_cash(df, end=pd.Timestamp("2025-01-10"))
+    assert c.loc["2025-01-04", "cash"] == pytest.approx(c.loc["2025-01-03", "cash"] - 2.50)
+    assert c["correction"].sum() == pytest.approx(-0.30)              # only the rounding is left over
+    assert c.loc["2025-01-06", "correction"] == pytest.approx(-0.30)  # booked on the export day
+    assert c["cash"].iloc[-1] == pytest.approx(rebuilt - 2.80)
+    assert c["flow"].sum() == engine.daily_cash(base)["flow"].sum()   # fees are not deposits
+    assert engine.summary(df)["net_invested"] == engine.summary(base)["net_invested"]
 
 
 def test_cash_balance_missing_in_old_files():

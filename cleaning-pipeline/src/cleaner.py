@@ -7,11 +7,12 @@ anonymised file, ``portfolio_transactions.csv``, with exactly five columns:
 
     datetime      ISO 8601 string, YYYY-MM-DD HH:MM:SS
     isin          security identifier
-    action        BUY | SELL | DIVIDEND | DEPOSIT | CASH
+    action        BUY | SELL | DIVIDEND | DEPOSIT | FEE | CASH
     quantity      shares, always >= 0 (0 for dividends)
     net_amount    EUR. BUY/SELL: absolute value including all fees and
                   AutoFX costs. DIVIDEND: after withholding tax (what hit
                   your account); can be negative on a reversal day.
+                  FEE: signed, negative = cost.
 
 Sources
 -------
@@ -22,6 +23,9 @@ Sources
 * DEPOSIT     -> Account.csv: iDEAL deposits (money you put in from outside).
                  isin is empty, quantity 0. Pending iDEAL reservations count
                  as deposits from the day they are booked.
+* FEE         -> Account.csv: account costs and income outside trades, per
+                 day, signed (connection fees, real-time price fees,
+                 interest, courtesy refunds). See FEE_PREFIXES.
 * CASH        -> Account.csv: one row with the EUR cash balance at the time
                  of the export (sum of all movements except the internal cash
                  sweeps to/from flatexDEGIRO Bank). isin empty, quantity 0.
@@ -102,6 +106,13 @@ MAX_FX_GAP_DAYS = 90
 # account. Their counterpart is an amount-less "Overboeking ..." row, so they
 # are left out when adding up the cash balance.
 SWEEP_DESCRIPTIONS = {"Degiro Cash Sweep Transfer"}
+# Account.csv EUR rows that are account costs or income outside trades and
+# dividends: yearly exchange connection fees, real-time price fees, interest,
+# and DEGIRO's occasional courtesy refund. Written as FEE rows (signed).
+FEE_PREFIXES = (
+    "DEGIRO Aansluitingskosten", "DEGIRO Real-Time", "Flatex Interest", "Rente",
+    "DEGIRO courtesy",
+)
 
 
 class CleanerError(Exception):
@@ -399,6 +410,31 @@ def build_deposits(acc: pd.DataFrame, report: Report) -> pd.DataFrame:
 
 
 # =============================================================================
+# FEES
+# =============================================================================
+def build_fees(acc: pd.DataFrame, report: Report) -> pd.DataFrame:
+    """Daily net of account costs/income in EUR (see FEE_PREFIXES). Negative = cost."""
+    fee = acc[acc["description"].str.startswith(FEE_PREFIXES) & (acc["cur"].str.strip() == "EUR")].copy()
+    if fee.empty:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+    fee["amount_n"] = fee["amount"].map(parse_decimal).fillna(0.0)
+    fee["day"] = _iso_date(fee["date"])
+    daily = fee.groupby("day", as_index=False)["amount_n"].sum()
+    daily["amount_n"] = daily["amount_n"].round(2)
+    daily = daily[daily["amount_n"].abs() >= 0.005]  # e.g. 'Flatex Interest Income' of 0,00
+    if daily.empty:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+    report.note(f"{len(daily)} fee/interest day(s), net EUR {daily['amount_n'].sum():,.2f}")
+    return pd.DataFrame({
+        "datetime": daily["day"] + " 00:00:00",
+        "isin": "",
+        "action": "FEE",
+        "quantity": 0.0,
+        "net_amount": daily["amount_n"].values,
+    })
+
+
+# =============================================================================
 # CASH
 # =============================================================================
 def build_cash(acc: pd.DataFrame, report: Report) -> pd.DataFrame:
@@ -453,9 +489,10 @@ def clean(account_path: Path, transactions_path: Path, rules_path: Path = DEFAUL
     trades = build_trades(tx, rules, report)
     dividends = build_dividends(acc, report)
     deposits = build_deposits(acc, report)
+    fees = build_fees(acc, report)
     cash = build_cash(acc, report)
 
-    frames = [f for f in (trades, dividends, deposits, cash) if not f.empty]
+    frames = [f for f in (trades, dividends, deposits, fees, cash) if not f.empty]
     out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=OUTPUT_COLUMNS)
     out = out.astype({"quantity": "float64", "net_amount": "float64"})
     out = out.sort_values("datetime", kind="stable").reset_index(drop=True)

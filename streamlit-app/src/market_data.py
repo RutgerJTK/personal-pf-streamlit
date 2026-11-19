@@ -32,10 +32,17 @@ def load_isin_map() -> dict:
 # BITC and GOLD ended up far below the DEGIRO price).
 MAX_QUOTE_AGE_DAYS = 6
 FLAT_BARS = 5
+# Listings of the same ISIN that differ by more than this are flagged on the page.
+DISAGREE_PCT = 0.03
 
 
-def _quote(ticker: str) -> tuple[float, float | None, str, pd.Timestamp] | None:
-    """(last price, previous close, currency, date of last trade) for one Yahoo symbol, or None."""
+def _quote(ticker: str) -> dict | None:
+    """
+    Latest Yahoo quote for one symbol, or None when it fails or looks stale:
+    last, prev (previous session's close), currency, as_of (date of the last
+    session), traded_today (whether that session is today in the exchange's
+    own time zone).
+    """
     import yfinance as yf  # imported lazily so the rest of the app works without it
 
     try:
@@ -54,8 +61,11 @@ def _quote(ticker: str) -> tuple[float, float | None, str, pd.Timestamp] | None:
     if closes.empty:
         return None
     idx = pd.DatetimeIndex(closes.index)
-    as_of = (idx.tz_localize(None) if idx.tz is not None else idx)[-1].normalize()
-    age = (pd.Timestamp.today().normalize() - as_of).days
+    tz = idx.tz
+    as_of = (idx.tz_localize(None) if tz is not None else idx)[-1].normalize()
+    today = pd.Timestamp.now(tz=tz).tz_localize(None).normalize() if tz is not None \
+        else pd.Timestamp.today().normalize()
+    age = (today - as_of).days
     if age > MAX_QUOTE_AGE_DAYS:
         print(f"[prices] {ticker}: last trade {as_of.date()} is {age} days old, skipped")
         return None
@@ -66,16 +76,17 @@ def _quote(ticker: str) -> tuple[float, float | None, str, pd.Timestamp] | None:
     prev = float(closes.iloc[-2]) if len(closes) > 1 else None
     if cur in ("GBp", "GBX"):  # London quotes in pence
         last, prev, cur = last / 100, (prev / 100 if prev else prev), "GBP"
-    return last, prev, cur.upper(), as_of
+    return {"last": last, "prev": prev, "currency": cur.upper(), "as_of": as_of,
+            "traded_today": as_of == today}
 
 
-def _eur_rate(currency: str, cache: dict) -> float | None:
-    """Units of `currency` per 1 EUR."""
+def _eur_rate(currency: str, cache: dict) -> tuple[float, float] | None:
+    """(now, previous close): units of `currency` per 1 EUR."""
     if currency == "EUR":
-        return 1.0
+        return 1.0, 1.0
     if currency not in cache:
         q = _quote(f"EUR{currency}=X")
-        cache[currency] = q[0] if q else None
+        cache[currency] = (q["last"], q["prev"] or q["last"]) if q else None
     return cache[currency]
 
 
@@ -83,29 +94,42 @@ def _eur_rate(currency: str, cache: dict) -> float | None:
 def fetch_quotes(tickers_by_isin: dict[str, tuple[str, ...]]) -> pd.DataFrame:
     """
     Live prices in EUR, indexed by isin, with columns:
-    ticker, currency, price_local, price_eur, prev_close_eur, as_of.
+    ticker, currency, price_local, price_eur, prev_close_eur, as_of,
+    traded_today, check (other listings that disagree, else empty).
+
     Each ISIN's tickers are tried in order; the first with a fresh price wins.
+    The others are still fetched to cross-check it.
+
+    prev_close_eur is what the position was worth per share at the previous
+    close, so price_eur - prev_close_eur is today's change like DEGIRO shows it:
+    if the listing has not traded yet today, only the currency moved.
     Cached for 15 minutes.
     """
-    fx: dict[str, float | None] = {}
+    fx: dict[str, tuple[float, float] | None] = {}
     rows = []
     for isin, tickers in tickers_by_isin.items():
+        found = []
         for t in tickers:
             q = _quote(t)
-            if not q:
-                continue
-            last, prev, cur, as_of = q
-            rate = _eur_rate(cur, fx)
-            if not rate:
-                continue
-            rows.append({
-                "isin": isin, "ticker": t, "currency": cur, "price_local": last,
-                "price_eur": last / rate,
-                "prev_close_eur": prev / rate if prev else None,
-                "as_of": as_of,
-            })
-            break
-    cols = ["isin", "ticker", "currency", "price_local", "price_eur", "prev_close_eur", "as_of"]
+            rates = _eur_rate(q["currency"], fx) if q else None
+            if q and rates:
+                found.append((t, q, rates))
+        if not found:
+            continue
+        t, q, (rate, rate_prev) = found[0]
+        price_eur = q["last"] / rate
+        prev_local = q["prev"] if q["traded_today"] else q["last"]
+        others = [(t2, q2["last"] / r2[0]) for t2, q2, r2 in found[1:]]
+        off = [f"{t2} €{p:,.2f}" for t2, p in others if abs(p / price_eur - 1) > DISAGREE_PCT]
+        rows.append({
+            "isin": isin, "ticker": t, "currency": q["currency"], "price_local": q["last"],
+            "price_eur": price_eur,
+            "prev_close_eur": prev_local / rate_prev if prev_local else None,
+            "as_of": q["as_of"], "traded_today": q["traded_today"],
+            "check": (f"{t} €{price_eur:,.2f} vs " + ", ".join(off)) if off else "",
+        })
+    cols = ["isin", "ticker", "currency", "price_local", "price_eur", "prev_close_eur",
+            "as_of", "traded_today", "check"]
     return pd.DataFrame(rows, columns=cols).set_index("isin")
 
 # =============================================================================

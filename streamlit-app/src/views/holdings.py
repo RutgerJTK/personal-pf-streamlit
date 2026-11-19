@@ -62,6 +62,11 @@ if len(unpriced) == len(h):
     st.warning("Live prices are unavailable right now, so all values below are at cost basis.")
 elif unpriced:
     st.warning(f"No live price for {', '.join(unpriced)}; valued at cost basis.")
+disagree = [f"**{h.loc[i, 'short']}**: {c}" for i, c in quotes.get("check", {}).items() if c and i in h.index]
+if disagree:
+    st.warning("Listings of the same product disagree by more than 3%, so one price is probably wrong. "
+               "Check which matches DEGIRO and put that ticker first (or remove the bad one) in "
+               "`shared-config/isin_map.json`.  \n" + "  \n".join(disagree))
 
 # --- Headline numbers -------------------------------------------------------
 priced = h[h["priced"]]
@@ -97,7 +102,8 @@ k[3].metric("Unrealized P/L", eur(unreal, sign=True), pct(unreal_pct, sign=True)
                  "out of its GAK, so its figure is a bit higher). Positions without a price are left out.")
 k[4].metric("Today", eur(day, sign=True) if day == day else "–",
             pct(day / day_base, sign=True, digits=2) if day == day and day_base else None,
-            help="Change since the previous close, per each listing's own trading day.")
+            help="Change since the previous close. A listing that has not traded yet today (e.g. US stocks "
+                 "before 15:30) only moves with the exchange rate, like in DEGIRO.")
 
 k = st.columns(5)
 k[4].metric("Positions", len(h),

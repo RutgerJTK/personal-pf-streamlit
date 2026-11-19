@@ -77,8 +77,8 @@
     }
   },
   "IE0007Y8Y157": {
-    "name": "VanEck Quantum Computing (QNTM)",
-    "short": "QNTM",
+    "name": "VanEck Quantum Computing (QUTM)",
+    "short": "QUTM",
     "group": "ETF",
     "kind": "Thematic ETF",
     "tickers": ["QUTM.DE", "QNTM.MI", "QNTM.AS"],
@@ -99,7 +99,7 @@
     "short": "GOLD",
     "group": "ETF",
     "kind": "Gold ETC",
-    "tickers": ["GOLD.PA", "GOLD.AS"],
+    "tickers": ["GOLD.AS", "GLDA.DE", "GLDA.L"],
     "currency": "USD",
     "region": "Commodity",
     "sector": "Commodities"
@@ -109,7 +109,7 @@
     "short": "BITC",
     "group": "ETF",
     "kind": "Crypto ETP",
-    "tickers": ["BITC.AS", "BITC.PA", "BITC.SW"],
+    "tickers": ["BITC.DE", "BITC.PA"],
     "currency": "USD",
     "region": "Crypto",
     "sector": "Crypto"

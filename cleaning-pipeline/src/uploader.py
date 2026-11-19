@@ -12,6 +12,10 @@ Pushes two things to your private bucket, using YOUR local AWS credentials
 Guards: the cleaned file must have exactly the five expected columns, and
 nothing from raw_data/ can ever be written under cleaned/.
 
+After a real (non dry-run) upload, the raw exports in raw_data/ are checked
+against their S3 copies (same size) and then deleted locally, so S3 is the
+only place they live. Pass --keep-local to keep them.
+
 Credentials come from the normal boto3 chain (env vars, ~/.aws, AWS_PROFILE).
 
 Usage:
@@ -77,6 +81,19 @@ def _put(s3, bucket: str, key: str, path: Path, dry_run: bool) -> None:
     print(f"  uploaded {path.name} ({size_kb:.1f} KB) -> s3://{bucket}/{key}")
 
 
+def remove_local_raw(s3, bucket: str, uploads: list[tuple[Path, str]]) -> None:
+    """Delete each local raw file, but only once S3 holds a copy of the same size."""
+    for path, key in uploads:
+        remote = s3.head_object(Bucket=bucket, Key=key)["ContentLength"]
+        local = path.stat().st_size
+        if remote != local:
+            raise UploadError(f"s3://{bucket}/{key} is {remote} bytes, local {path.name} is {local}; "
+                              "kept the local file")
+    for path, _ in uploads:
+        path.unlink()
+        print(f"  removed local {path}")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Upload raw archive + cleaned file to S3")
     p.add_argument("--bucket", default=os.environ.get("PF_BUCKET", DEFAULT_BUCKET))
@@ -85,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--clean-file", type=Path, default=DEFAULT_CLEAN_FILE)
     p.add_argument("--skip-raw", action="store_true", help="only upload the cleaned file")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--keep-local", action="store_true",
+                   help="keep the raw exports in raw_data/ after uploading (default: delete them)")
     args = p.parse_args(argv)
 
     try:
@@ -101,9 +120,14 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"Bucket: {args.bucket}   cleaned rows: {rows}   dry-run: {args.dry_run}")
         stamp = date.today().isoformat()
-        for rp in raw_paths:
-            _put(s3, args.bucket, f"raw/{stamp}/{rp.name}", rp, args.dry_run)
+        uploads = [(rp, f"raw/{stamp}/{rp.name}") for rp in raw_paths]
+        for rp, key in uploads:
+            _put(s3, args.bucket, key, rp, args.dry_run)
         _put(s3, args.bucket, CLEANED_KEY, args.clean_file, args.dry_run)
+        if uploads and not args.dry_run and not args.keep_local:
+            remove_local_raw(s3, args.bucket, uploads)
+        elif uploads and args.dry_run and not args.keep_local:
+            print("  [dry-run] would remove the local raw exports after upload")
     except UploadError as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
         return 1

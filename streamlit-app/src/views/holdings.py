@@ -74,19 +74,34 @@ day_base = (h["market_value"] - h["day_change_eur"]).where(h["day_change_eur"].n
 conc = engine.concentration(h)
 n_by_group = h["group"].value_counts()
 w_by_group = h.groupby("group")["weight"].sum()
+cash, cash_as_of = engine.cash_balance(df)
+net_invested = engine.summary(df)["net_invested"]
 
-k = st.columns(4)
-k[0].metric("Portfolio value", eur(market_total),
-            help="Open positions at live prices. Cash in your DEGIRO account is not included.")
-k[1].metric("Unrealized P/L", eur(unreal, sign=True), pct(unreal_pct, sign=True),
-            help=f"Against an average-cost basis of {eur(cost_total)}. Positions without a price are left out.")
-k[2].metric("Today", eur(day, sign=True) if day == day else "–",
+k = st.columns(5)
+if cash is not None:
+    account = market_total + cash
+    total_pl = account - net_invested
+    k[0].metric("Account value", eur(account), f"incl. {eur(cash)} cash", delta_color="off",
+                help=f"Positions + cash. Compare with *Totaal Account* in DEGIRO. "
+                     f"Cash is the balance at your last export ({cash_as_of:%d %b %Y}).")
+    k[2].metric("Total P/L", eur(total_pl, sign=True), pct(total_pl / net_invested, sign=True),
+                help=f"Account value minus the {eur(net_invested)} you deposited. "
+                     "Compare with *Totaal W/V* in DEGIRO.")
+else:
+    k[0].metric("Account value", "–", help="Re-run the cleaning pipeline to include your cash balance.")
+    k[2].metric("Total P/L", "–", help="Needs the cash balance; re-run the cleaning pipeline.")
+k[1].metric("Portfolio value", eur(market_total),
+            help="Open positions at live prices, without cash. Compare with *Portefeuille* in DEGIRO.")
+k[3].metric("Unrealized P/L", eur(unreal, sign=True), pct(unreal_pct, sign=True),
+            help=f"Against an average-cost basis of {eur(cost_total)}, fees included (DEGIRO leaves fees "
+                 "out of its GAK, so its figure is a bit higher). Positions without a price are left out.")
+k[4].metric("Today", eur(day, sign=True) if day == day else "–",
             pct(day / day_base, sign=True, digits=2) if day == day and day_base else None,
             help="Change since the previous close, per each listing's own trading day.")
-k[3].metric("Positions", len(h),
-            help=" · ".join(f"{n} {GROUP_LABEL.get(g, g)}" for g, n in n_by_group.items()))
 
-k = st.columns(4)
+k = st.columns(5)
+k[4].metric("Positions", len(h),
+            help=" · ".join(f"{n} {GROUP_LABEL.get(g, g)}" for g, n in n_by_group.items()))
 k[0].metric("Stocks / ETFs", f"{w_by_group.get('Stock', 0):.0%} / {w_by_group.get('ETF', 0):.0%}",
             help="ETCs and ETPs (gold, bitcoin) count as ETFs here.")
 top = h.iloc[0]
@@ -164,7 +179,7 @@ with left:
     ))
     fig.update_layout(xaxis=dict(tickformat=".0%", title=None, range=[0, reg.max() * 1.25]), yaxis_title=None)
     st.plotly_chart(_layout(fig, max(260, 34 * len(reg) + 40)), width="stretch")
-    st.caption("Where the companies are listed/based. QNTM is a global fund.")
+    st.caption("Where the companies are listed/based. QUTM is a global fund.")
 with right:
     st.subheader("Underlying currency")
     cur = engine.currency_exposure(h).sort_values()
@@ -189,7 +204,7 @@ table = view.assign(
 )[[
     "short", "name", "kind", "sector", "quantity", "avg_cost", "price_eur", "market_value",
     "weight_pct", "weight_in_group_pct", "cost_basis", "unrealized", "unrealized_pct_100",
-    "day_pct_100", "dividends", "first_buy",
+    "total_return", "day_pct_100", "dividends", "first_buy",
 ]].reset_index()
 
 cc = st.column_config
@@ -212,6 +227,8 @@ st.dataframe(
         "cost_basis": cc.NumberColumn("Cost basis", format="euro"),
         "unrealized": cc.NumberColumn("Unrealized €", format="euro"),
         "unrealized_pct_100": cc.NumberColumn("Unrealized %", format="%.1f%%"),
+        "total_return": cc.NumberColumn("Total P/L €", format="euro",
+                                        help="Unrealized + profit on partial sales this holding period + dividends. Compare with *Totale W/V* in DEGIRO."),
         "day_pct_100": cc.NumberColumn("Today", format="%.2f%%"),
         "dividends": cc.NumberColumn("Dividends", format="euro", help="All-time, after withholding tax"),
         "first_buy": cc.DateColumn("Held since", format="D MMM YYYY",
@@ -227,7 +244,12 @@ with st.expander("About these numbers"):
         "- **Prices** come from Yahoo Finance via the tickers in `shared-config/isin_map.json` and are cached "
         "for 15 minutes. A position without a price is valued at cost.\n"
         "- **Stocks vs ETFs**: the gold ETC and bitcoin ETP are counted as ETFs.\n"
-        "- **Cash** in your DEGIRO account is not part of the portfolio value (the cleaner strips balances)."
+        "- **Cash** is the balance at your last DEGIRO export, so it lags until you re-run the pipeline. "
+        "It counts toward *Account value*, not *Portfolio value*.\n"
+        "- **Stale listings**: a ticker whose last trade is over a week old, or whose price has not moved for "
+        "five days, is skipped and the next ticker in `isin_map.json` is tried.\n"
+        "- **DEGIRO can be stale too**: after a corporate action DEGIRO sometimes keeps showing the conversion "
+        "price (e.g. OPTT after its reverse split)."
     )
     etf_rows = [
         {"ETF": m.get("short", i), "Look-through weights as of": m.get("weights_as_of", "–")}
@@ -236,5 +258,6 @@ with st.expander("About these numbers"):
     if etf_rows:
         st.dataframe(etf_rows, hide_index=True)
     if len(quotes):
-        st.caption("Price sources: " + ", ".join(f"{h.loc[i, 'short']} → {quotes.loc[i, 'ticker']}"
-                                                 for i in quotes.index if i in h.index))
+        st.caption("Price sources: " + ", ".join(
+            f"{h.loc[i, 'short']} → {quotes.loc[i, 'ticker']} ({quotes.loc[i, 'as_of']:%d %b})"
+            for i in quotes.index if i in h.index))

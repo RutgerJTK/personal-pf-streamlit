@@ -84,6 +84,7 @@ def test_dividend_is_net_of_tax_and_converted_with_degiro_rate(tmp_path, rules):
         _acc_row("16-10-2025", "08:23", "16-10-2025", FAKE_ISIN_A, "Dividend", "USD", "8,48"),
     ]
     out, _ = _run(tmp_path, [], acc, rules)
+    out = out[out.action != "CASH"]
     assert len(out) == 1
     row = out.iloc[0]
     assert row.action == "DIVIDEND" and row.quantity == 0
@@ -96,7 +97,7 @@ def test_dividend_reversal_nets_to_zero_and_is_dropped(tmp_path, rules):
         _acc_row("15-05-2025", "10:00", "15-05-2025", FAKE_ISIN_B, "Dividend", "EUR", "10,00"),
     ]
     out, report = _run(tmp_path, [], acc, rules)
-    assert out.empty
+    assert (out.action == "CASH").all()   # only the cash balance row is left
     assert any("net to zero" in n for n in report.notes)
 
 
@@ -170,3 +171,26 @@ def test_one_cent_test_deposit_is_ignored(tmp_path, rules):
     dep = out[out.action == "DEPOSIT"]
     assert dep.net_amount.tolist() == [135.00]
     assert any("test deposit" in n for n in report.notes)
+
+
+def test_cash_balance_skips_sweeps_and_uses_newest_row_time(tmp_path, rules):
+    acc = [  # newest first, like DEGIRO
+        _acc_row("13-11-2026", "17:31", "13-11-2026", "", "Overboeking van uw geldrekening bij flatexDEGIRO Bank 81,67 EUR", "", ""),
+        _acc_row("13-11-2026", "17:31", "13-11-2026", "", "Degiro Cash Sweep Transfer", "EUR", "81,67"),
+        _acc_row("13-11-2026", "16:45", "13-11-2026", FAKE_ISIN_B, "DEGIRO Transactiekosten en/of kosten van derden", "EUR", "-2,00"),
+        _acc_row("13-11-2026", "16:45", "13-11-2026", FAKE_ISIN_B, "Koop 1 @ 98 EUR", "EUR", "-98,00"),
+        _acc_row("01-11-2026", "09:00", "01-11-2026", "", "iDEAL storting", "EUR", "150,00"),
+    ]
+    out, report = _run(tmp_path, [], acc, rules)
+    cash = out[out.action == "CASH"]
+    assert len(cash) == 1
+    assert cash.net_amount.iloc[0] == 50.00          # 150 - 98 - 2; the sweep is internal
+    assert cash.datetime.iloc[0] == "2026-11-13 17:31:00"
+    assert cash["isin"].iloc[0] == "" and cash["quantity"].iloc[0] == 0
+    assert any("cash balance" in n for n in report.notes)
+
+
+def test_no_cash_row_without_account_rows(tmp_path, rules):
+    tx = [_tx_row("01-03-2025", "09:30", FAKE_ISIN_B, 5, "-503,00", "a")]
+    out, _ = _run(tmp_path, tx, [], rules)
+    assert "CASH" not in set(out.action)

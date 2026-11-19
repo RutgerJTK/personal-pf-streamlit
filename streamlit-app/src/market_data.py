@@ -26,26 +26,47 @@ def load_isin_map() -> dict:
     return {k: v for k, v in raw.items() if not k.startswith("_")}
 
 
-def _quote(ticker: str) -> tuple[float, float | None, str] | None:
-    """(last price, previous close, currency) for one Yahoo symbol, or None."""
+# A listing whose last trade is older than this, or whose price has not moved
+# for FLAT_BARS trading days, is treated as dead and the next ticker is tried.
+# Yahoo keeps serving the last price of illiquid / delisted lines (that is how
+# BITC and GOLD ended up far below the DEGIRO price).
+MAX_QUOTE_AGE_DAYS = 6
+FLAT_BARS = 5
+
+
+def _quote(ticker: str) -> tuple[float, float | None, str, pd.Timestamp] | None:
+    """(last price, previous close, currency, date of last trade) for one Yahoo symbol, or None."""
     import yfinance as yf  # imported lazily so the rest of the app works without it
 
     try:
-        fi = yf.Ticker(ticker).fast_info
-        last = fi.last_price
-        cur = fi.currency
-        try:
-            prev = fi.previous_close
-        except Exception:
-            prev = None
+        tk = yf.Ticker(ticker)
+        h = tk.history(period="1mo", interval="1d", auto_adjust=False, actions=False)
+        cur = (getattr(tk, "history_metadata", None) or {}).get("currency")
+        if not cur:
+            cur = tk.fast_info.currency
     except Exception as exc:  # network, delisted, rate-limited, ...
         print(f"[prices] {ticker}: {type(exc).__name__}: {exc}")
         return None
-    if last is None or pd.isna(last) or last <= 0 or not cur:
+    if h is None or h.empty or "Close" not in h or not cur:
         return None
+    closes = h["Close"].astype(float).dropna()
+    closes = closes[closes > 0]
+    if closes.empty:
+        return None
+    idx = pd.DatetimeIndex(closes.index)
+    as_of = (idx.tz_localize(None) if idx.tz is not None else idx)[-1].normalize()
+    age = (pd.Timestamp.today().normalize() - as_of).days
+    if age > MAX_QUOTE_AGE_DAYS:
+        print(f"[prices] {ticker}: last trade {as_of.date()} is {age} days old, skipped")
+        return None
+    if len(closes) >= FLAT_BARS and closes.iloc[-FLAT_BARS:].nunique() == 1:
+        print(f"[prices] {ticker}: price unchanged for {FLAT_BARS} days, skipped as stale")
+        return None
+    last = float(closes.iloc[-1])
+    prev = float(closes.iloc[-2]) if len(closes) > 1 else None
     if cur in ("GBp", "GBX"):  # London quotes in pence
         last, prev, cur = last / 100, (prev / 100 if prev else prev), "GBP"
-    return float(last), (float(prev) if prev and not pd.isna(prev) else None), cur.upper()
+    return last, prev, cur.upper(), as_of
 
 
 def _eur_rate(currency: str, cache: dict) -> float | None:
@@ -62,8 +83,8 @@ def _eur_rate(currency: str, cache: dict) -> float | None:
 def fetch_quotes(tickers_by_isin: dict[str, tuple[str, ...]]) -> pd.DataFrame:
     """
     Live prices in EUR, indexed by isin, with columns:
-    ticker, currency, price_local, price_eur, prev_close_eur.
-    Each ISIN's tickers are tried in order; the first that answers wins.
+    ticker, currency, price_local, price_eur, prev_close_eur, as_of.
+    Each ISIN's tickers are tried in order; the first with a fresh price wins.
     Cached for 15 minutes.
     """
     fx: dict[str, float | None] = {}
@@ -73,7 +94,7 @@ def fetch_quotes(tickers_by_isin: dict[str, tuple[str, ...]]) -> pd.DataFrame:
             q = _quote(t)
             if not q:
                 continue
-            last, prev, cur = q
+            last, prev, cur, as_of = q
             rate = _eur_rate(cur, fx)
             if not rate:
                 continue
@@ -81,9 +102,10 @@ def fetch_quotes(tickers_by_isin: dict[str, tuple[str, ...]]) -> pd.DataFrame:
                 "isin": isin, "ticker": t, "currency": cur, "price_local": last,
                 "price_eur": last / rate,
                 "prev_close_eur": prev / rate if prev else None,
+                "as_of": as_of,
             })
             break
-    cols = ["isin", "ticker", "currency", "price_local", "price_eur", "prev_close_eur"]
+    cols = ["isin", "ticker", "currency", "price_local", "price_eur", "prev_close_eur", "as_of"]
     return pd.DataFrame(rows, columns=cols).set_index("isin")
 
 # =============================================================================

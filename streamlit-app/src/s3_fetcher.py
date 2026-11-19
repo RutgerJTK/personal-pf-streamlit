@@ -23,7 +23,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 CLEANED_KEY = "cleaned/portfolio_transactions.csv"
 EXPECTED_COLUMNS = ["datetime", "isin", "action", "quantity", "net_amount"]
-ALLOWED_ACTIONS = {"BUY", "SELL", "DIVIDEND", "DEPOSIT"}
+ALLOWED_ACTIONS = {"BUY", "SELL", "DIVIDEND", "DEPOSIT", "CASH"}
 
 
 def parse_transactions(raw: bytes | str) -> pd.DataFrame:

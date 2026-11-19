@@ -31,6 +31,18 @@ def summary(df: pd.DataFrame) -> dict:
     }
 
 
+def cash_balance(df: pd.DataFrame) -> tuple[float | None, pd.Timestamp | None]:
+    """
+    Cash in the DEGIRO account (EUR) and when it was measured, from the CASH
+    row the cleaner writes. (None, None) for files made before that existed.
+    """
+    c = df[df["action"] == "CASH"]
+    if c.empty:
+        return None, None
+    last = c.sort_values("datetime", kind="stable").iloc[-1]
+    return float(last["net_amount"]), last["datetime"]
+
+
 def cumulative_cashflows(df: pd.DataFrame) -> pd.DataFrame:
     """
     Daily series with:
@@ -67,23 +79,28 @@ _EPS = 1e-6
 def open_positions(df: pd.DataFrame) -> pd.DataFrame:
     """
     One row per ISIN that is still held, indexed by isin, with columns
-    quantity, cost_basis, avg_cost, first_buy, last_trade, dividends.
+    quantity, cost_basis, avg_cost, first_buy, last_trade, realized, dividends.
+
+    realized  profit on partial sales during the current holding period
+              (sale proceeds after fees minus the average cost they remove).
     """
     trades = df[df["action"].isin(["BUY", "SELL"])].sort_values("datetime", kind="stable")
     rows = []
     for isin, g in trades.groupby("isin", sort=False):
-        qty = cost = 0.0
+        qty = cost = realized = 0.0
         first_buy = None
         for r in g.itertuples(index=False):
             if r.action == "BUY":
                 if qty <= _EPS:          # (re)opening a position starts a new holding period
                     first_buy = r.datetime
-                    qty, cost = 0.0, 0.0
+                    qty, cost, realized = 0.0, 0.0, 0.0
                 qty += r.quantity
                 cost += r.net_amount
             else:
                 if qty > _EPS:
-                    cost -= cost * min(r.quantity / qty, 1.0)
+                    removed = cost * min(r.quantity / qty, 1.0)
+                    realized += r.net_amount - removed
+                    cost -= removed
                 qty -= r.quantity
                 if qty <= 1e-4:
                     qty, cost = 0.0, 0.0
@@ -91,9 +108,9 @@ def open_positions(df: pd.DataFrame) -> pd.DataFrame:
             rows.append({
                 "isin": isin, "quantity": qty, "cost_basis": cost,
                 "avg_cost": cost / qty, "first_buy": first_buy,
-                "last_trade": g["datetime"].iloc[-1],
+                "last_trade": g["datetime"].iloc[-1], "realized": realized,
             })
-    cols = ["isin", "quantity", "cost_basis", "avg_cost", "first_buy", "last_trade"]
+    cols = ["isin", "quantity", "cost_basis", "avg_cost", "first_buy", "last_trade", "realized"]
     out = pd.DataFrame(rows, columns=cols).set_index("isin")
     divs = df[df["action"] == "DIVIDEND"].groupby("isin")["net_amount"].sum()
     out["dividends"] = divs.reindex(out.index).fillna(0.0)
@@ -132,6 +149,9 @@ def build_holdings(positions: pd.DataFrame, meta: dict, quotes: pd.DataFrame | N
     h["market_value"] = np.where(h["priced"], h["quantity"] * h["price_eur"], h["cost_basis"])
     h["unrealized"] = np.where(h["priced"], h["market_value"] - h["cost_basis"], np.nan)
     h["unrealized_pct"] = h["unrealized"] / h["cost_basis"]
+    # Same idea as DEGIRO's "Totale W/V": price gain after fees, plus profit on
+    # partial sales this holding period, plus dividends received
+    h["total_return"] = h["unrealized"] + h["realized"] + h["dividends"]
     h["day_change_pct"] = h["price_eur"] / prev - 1
     h["day_change_eur"] = (h["price_eur"] - prev) * h["quantity"]
 

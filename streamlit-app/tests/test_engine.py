@@ -112,3 +112,46 @@ def test_concentration():
     h = pd.DataFrame({"weight": [0.5, 0.5]})
     c = engine.concentration(h)
     assert c["top1"] == 0.5 and c["effective_n"] == 2
+
+# --- Cash + total P/L -------------------------------------------------------
+def test_cash_balance_takes_newest_cash_row():
+    df = pd.concat([_df(), pd.DataFrame({
+        "datetime": pd.to_datetime(["2025-01-02 12:00", "2025-01-07 17:00"]),
+        "isin": ["", ""], "action": ["CASH", "CASH"],
+        "quantity": [0.0, 0.0], "net_amount": [10.0, 71.37],
+    })], ignore_index=True)
+    amount, as_of = engine.cash_balance(df)
+    assert amount == 71.37 and as_of == pd.Timestamp("2025-01-07 17:00")
+    # CASH rows must not count as deposits or move the rebuilt cash line
+    assert engine.summary(df)["net_invested"] == 150
+    assert engine.daily_cash(df)["cash"].iloc[-1] == engine.daily_cash(_df())["cash"].iloc[-1]
+
+
+def test_cash_balance_missing_in_old_files():
+    assert engine.cash_balance(_df()) == (None, None)
+
+
+def test_total_return_is_unrealized_plus_dividends():
+    df = _df()
+    pos = engine.open_positions(df)                   # X: 10 shares, cost 100, dividends 3
+    quotes = pd.DataFrame({"price_eur": [12.0]}, index=pd.Index(["X"], name="isin"))
+    h = engine.build_holdings(pos, {}, quotes)
+    assert h.loc["X", "unrealized"] == 20.0
+    assert h.loc["X", "total_return"] == 23.0
+
+
+def test_realized_counts_partial_sales_in_current_holding_period():
+    df = pd.DataFrame({
+        "datetime": pd.to_datetime(["2025-01-01", "2025-02-01", "2025-03-01", "2025-04-01", "2025-05-01"]),
+        "isin": ["Z"] * 5,
+        "action": ["BUY", "SELL", "BUY", "SELL", "BUY"],
+        "quantity": [10.0, 10.0, 4.0, 2.0, 2.0],
+        "net_amount": [100.0, 150.0, 40.0, 30.0, 30.0],
+    })
+    pos = engine.open_positions(df)
+    # first period closed (its +50 is not counted); then 2 of 4 sold at 15 vs cost 10
+    assert pos.loc["Z", "realized"] == 10.0
+    assert pos.loc["Z", "cost_basis"] == 50.0
+    q = pd.DataFrame({"price_eur": [20.0]}, index=pd.Index(["Z"], name="isin"))
+    h = engine.build_holdings(pos, {}, q)
+    assert h.loc["Z", "total_return"] == (80.0 - 50.0) + 10.0

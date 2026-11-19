@@ -7,7 +7,7 @@ anonymised file, ``portfolio_transactions.csv``, with exactly five columns:
 
     datetime      ISO 8601 string, YYYY-MM-DD HH:MM:SS
     isin          security identifier
-    action        BUY | SELL | DIVIDEND | DEPOSIT
+    action        BUY | SELL | DIVIDEND | DEPOSIT | CASH
     quantity      shares, always >= 0 (0 for dividends)
     net_amount    EUR. BUY/SELL: absolute value including all fees and
                   AutoFX costs. DIVIDEND: after withholding tax (what hit
@@ -22,6 +22,9 @@ Sources
 * DEPOSIT     -> Account.csv: iDEAL deposits (money you put in from outside).
                  isin is empty, quantity 0. Pending iDEAL reservations count
                  as deposits from the day they are booked.
+* CASH        -> Account.csv: one row with the EUR cash balance at the time
+                 of the export (sum of all movements except the internal cash
+                 sweeps to/from flatexDEGIRO Bank). isin empty, quantity 0.
 * Corporate actions (rows without Order ID) are handled by the rules in
   shared-config/corporate_actions.json. Anything not covered stops the run.
 
@@ -95,6 +98,10 @@ KNOWN_NON_INCOME_PREFIXES = (
     "WIJZIGING ISIN", "CLAIMEMISSIE", "AFWIKKELING HEFBOOMPRODUCT",
 )
 MAX_FX_GAP_DAYS = 90
+# Internal moves between the DEGIRO account and the linked flatexDEGIRO Bank
+# account. Their counterpart is an amount-less "Overboeking ..." row, so they
+# are left out when adding up the cash balance.
+SWEEP_DESCRIPTIONS = {"Degiro Cash Sweep Transfer"}
 
 
 class CleanerError(Exception):
@@ -392,6 +399,33 @@ def build_deposits(acc: pd.DataFrame, report: Report) -> pd.DataFrame:
 
 
 # =============================================================================
+# CASH
+# =============================================================================
+def build_cash(acc: pd.DataFrame, report: Report) -> pd.DataFrame:
+    """One CASH row: the EUR cash balance at the newest Account.csv row."""
+    if acc.empty:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+    moves = acc[~acc["description"].isin(SWEEP_DESCRIPTIONS) & (acc["cur"].str.strip() != "")].copy()
+    moves["amount_n"] = moves["amount"].map(parse_decimal)
+    by_cur = moves.groupby("cur")["amount_n"].sum().round(2)
+    eur = float(by_cur.get("EUR", 0.0))
+    other = by_cur.drop("EUR", errors="ignore")
+    other = other[other.abs() >= 1.00]  # ignore rounding leftovers from FX bookings
+    if len(other):
+        report.warn("Cash in other currencies is not included in the CASH balance: "
+                    + ", ".join(f"{c} {v:,.2f}" for c, v in other.items()))
+    as_of = _to_dt(acc["date"], acc["time"]).max()
+    report.note(f"cash balance EUR {eur:,.2f} as of {as_of:%Y-%m-%d %H:%M}")
+    return pd.DataFrame({
+        "datetime": [as_of.strftime("%Y-%m-%d %H:%M:%S")],
+        "isin": [""],
+        "action": ["CASH"],
+        "quantity": [0.0],
+        "net_amount": [eur],
+    })
+
+
+# =============================================================================
 # Validation + orchestration
 # =============================================================================
 def validate_positions(df: pd.DataFrame) -> pd.DataFrame:
@@ -419,8 +453,9 @@ def clean(account_path: Path, transactions_path: Path, rules_path: Path = DEFAUL
     trades = build_trades(tx, rules, report)
     dividends = build_dividends(acc, report)
     deposits = build_deposits(acc, report)
+    cash = build_cash(acc, report)
 
-    frames = [f for f in (trades, dividends, deposits) if not f.empty]
+    frames = [f for f in (trades, dividends, deposits, cash) if not f.empty]
     out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=OUTPUT_COLUMNS)
     out = out.astype({"quantity": "float64", "net_amount": "float64"})
     out = out.sort_values("datetime", kind="stable").reset_index(drop=True)

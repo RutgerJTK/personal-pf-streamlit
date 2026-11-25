@@ -1,0 +1,23 @@
+{
+  "_readme": [
+    "ETF valuation proxies for the generic dashboard. Edit freely; no code changes needed.",
+    "Yahoo has P/E and P/B for most US-listed ETFs but rarely for European (UCITS) listings. When a held ETF has none, its name is matched against 'match' (case-insensitive, first rule that matches wins) and the ratios of the US ETF in 'proxy' are used instead. That ETF tracks the same index, so its holdings and ratios are near-identical.",
+    "Order matters: put specific rules (e.g. 'S&P 500 Equal Weight') above general ones ('S&P 500')."
+  ],
+  "rules": [
+    {"match": ["s&p 500 equal weight"],                                  "proxy": "RSP",  "index": "S&P 500 Equal Weight"},
+    {"match": ["s&p 500", "s&p500", "sp 500"],                           "proxy": "IVV",  "index": "S&P 500"},
+    {"match": ["nasdaq 100", "nasdaq-100", "nasdaq100"],                 "proxy": "QQQ",  "index": "Nasdaq-100"},
+    {"match": ["all-world", "all world", "acwi", "all country"],         "proxy": "VT",   "index": "FTSE All-World / MSCI ACWI"},
+    {"match": ["msci world"],                                            "proxy": "URTH", "index": "MSCI World"},
+    {"match": ["developed world", "ftse developed"],                     "proxy": "VEA",  "index": "FTSE Developed"},
+    {"match": ["emerging", "msci em ", "em imi"],                       "proxy": "IEMG", "index": "MSCI Emerging Markets"},
+    {"match": ["euro stoxx 50", "eurostoxx 50"],                         "proxy": "FEZ",  "index": "Euro Stoxx 50"},
+    {"match": ["stoxx europe 600", "msci europe", "developed europe", "europe"], "proxy": "IEUR", "index": "Europe"},
+    {"match": ["aex", "netherlands"],                                    "proxy": "EWN",  "index": "MSCI Netherlands"},
+    {"match": ["msci usa", "total stock", "us total"],                   "proxy": "VTI",  "index": "US total market"},
+    {"match": ["small cap"],                                             "proxy": "IJR",  "index": "Small caps"},
+    {"match": ["semiconductor"],                                         "proxy": "SOXX", "index": "Semiconductors"},
+    {"match": ["japan"],                                                 "proxy": "EWJ",  "index": "Japan"}
+  ]
+}

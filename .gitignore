@@ -229,6 +229,8 @@ streamlit-app/.streamlit/secrets.toml
 cleaning-pipeline/raw_data/
 raw_data/
 *.csv
+!streamlit-app/sample_data/*.csv
+*.xlsx
 *.xlsx
 *.xls
 *.ods

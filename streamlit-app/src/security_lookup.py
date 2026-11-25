@@ -12,6 +12,7 @@ cannot leak one user's data to another. Keep it that way.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from pathlib import Path
 
@@ -36,6 +37,11 @@ EXCHANGES = {
     "CPH": (".CO", "DKK"), "STO": (".ST", "SEK"), "OSL": (".OL", "NOK"),
 }
 _RANK = {code: i for i, code in enumerate(EXCHANGES)}
+
+# yfinance logs every failed symbol as an ERROR (HTTP 404 bodies, "possibly delisted").
+# Failed lookups are expected here (alternative listings, guesses), and the app
+# reports what matters itself, so only yfinance's critical messages are shown.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # Guesses when Yahoo search finds nothing: suffixes to try per trading currency.
 GUESS_SUFFIXES = {"USD": [""], "EUR": [".AS", ".DE", ".PA", ".MI", ".BR", ".MC"],
                   "GBP": [".L"], "GBX": [".L"], "CHF": [".SW"], "CAD": [".TO"]}
@@ -72,29 +78,65 @@ def rank_candidates(isin: str, t212_ticker: str, currency: str, hits: list[dict]
     """
     Yahoo symbols to try for one ISIN, best first.
 
-    Preference: listings in the currency the user traded in (Trading 212's
-    'Currency (Price / share)'), then symbols whose base equals the Trading 212
-    ticker, then the exchange order in EXCHANGES. Guesses built from the
-    Trading 212 ticker go last, so prices still work when search fails.
+    Search hits listed in the currency the user traded in (Trading 212's
+    'Currency (Price / share)') come first: those whose symbol matches the
+    Trading 212 ticker, then by the exchange order in EXCHANGES. Only when no
+    hit is in that currency are symbols guessed from the Trading 212 ticker
+    (e.g. EUNL -> EUNL.AS, EUNL.DE), ahead of the other-currency hits.
+    Guessing when not needed only produces failed lookups.
     """
     currency = (currency or "").upper().replace("GBX", "GBP")
     base = (t212_ticker or "").upper()
 
-    def score(h: dict) -> tuple:
-        _, cur = EXCHANGES.get(h["exchange"], ("", None))
-        return (cur != currency, h["symbol"].split(".")[0].upper() != base,
-                _RANK.get(h["exchange"], 99))
+    def cur(h: dict) -> str | None:
+        return EXCHANGES.get(h["exchange"], ("", None))[1]
 
-    ordered = [h["symbol"] for h in sorted(hits, key=score)]
-    if base:
-        for suffix in GUESS_SUFFIXES.get(currency, [""]):
-            ordered.append(f"{base}{suffix}")
+    def score(h: dict) -> tuple:
+        return (h["symbol"].split(".")[0].upper() != base, _RANK.get(h["exchange"], 99))
+
+    same = sorted((h for h in hits if cur(h) == currency), key=score)
+    other = sorted((h for h in hits if cur(h) != currency), key=score)
+    guesses = [] if same or not base else [f"{base}{sfx}" for sfx in GUESS_SUFFIXES.get(currency, [""])]
+    ordered = [h["symbol"] for h in same] + guesses + [h["symbol"] for h in other]
     seen, out = set(), []
-    for s in ordered:
-        if s not in seen:
-            seen.add(s)
-            out.append(s)
+    for sym in ordered:
+        if sym not in seen:
+            seen.add(sym)
+            out.append(sym)
     return out
+
+
+PROBE_MAX_AGE_DAYS = 10
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def has_recent_prices(symbol: str) -> bool:
+    """Whether Yahoo has a price for `symbol` from the last PROBE_MAX_AGE_DAYS days.
+    False for symbols that don't exist or stopped trading (cached 6 hours).
+    Network errors raise, so they aren't cached as 'no prices'."""
+    import yfinance as yf
+
+    h = yf.Ticker(symbol).history(period="1mo", interval="1d", auto_adjust=False, actions=False)
+    if h is None or h.empty or "Close" not in h:
+        return False
+    closes = h["Close"].astype(float).dropna()
+    closes = closes[closes > 0]
+    if closes.empty:
+        return False
+    last = pd.Timestamp(closes.index[-1]).tz_localize(None).normalize()
+    return (pd.Timestamp.today().normalize() - last).days <= PROBE_MAX_AGE_DAYS
+
+
+def first_with_prices(symbols: list[str] | tuple[str, ...]) -> str | None:
+    """The first symbol, in order, that has recent prices; None if none has.
+    Stops at the first hit, so later candidates are never requested."""
+    for sym in symbols:
+        try:
+            if has_recent_prices(sym):
+                return sym
+        except Exception as exc:  # network trouble: try the next one, retry next time
+            print(f"[lookup] {sym}: {type(exc).__name__}: {exc}")
+    return None
 
 
 def security_type(hits: list[dict], name: str) -> str:
@@ -178,6 +220,20 @@ def fund_ratios_from(pe, pb) -> tuple[float | None, float | None]:
     return (pe if pe and pe > 0 else None), (pb if pb and pb > 0 else None)
 
 
+def ratios_from_equity_table(eq: pd.DataFrame | None) -> tuple[float | None, float | None]:
+    """(P/E, P/B) from yfinance's funds_data.equity_holdings: rows 'Price/Earnings',
+    'Price/Book' (index named 'Average'), one column for the fund, one 'Category Average'."""
+    if eq is None or eq.empty:
+        return None, None
+    if "Average" in eq.columns:  # tolerate the table with the labels as a column
+        eq = eq.set_index("Average")
+    cols = [c for c in eq.columns if c != "Category Average"]
+    if not cols:
+        return None, None
+    vals = eq[cols[0]]
+    return fund_ratios_from(vals.get("Price/Earnings"), vals.get("Price/Book"))
+
+
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
 def fetch_fund_ratios(symbol: str) -> dict:
     """{'pe', 'pb'} of an ETF's holdings from Yahoo's fund data; None values if absent.
@@ -186,19 +242,15 @@ def fetch_fund_ratios(symbol: str) -> dict:
 
     pe = pb = None
     try:
-        eq = yf.Ticker(symbol).funds_data.equity_holdings
-        if eq is not None and not eq.empty:
-            col = [c for c in eq.columns if c not in ("Average", "Category Average")]
-            vals = eq.set_index("Average")[col[0]] if col else None
-            if vals is not None:
-                pe, pb = vals.get("Price/Earnings"), vals.get("Price/Book")
-    except Exception as exc:  # no fund data for this symbol, network, API change
-        print(f"[funds] {symbol}: {type(exc).__name__}: {exc}")
-    pe, pb = fund_ratios_from(pe, pb)
-    if pe is None and pb is None:  # some ETFs carry the ratios in .info instead
+        pe, pb = ratios_from_equity_table(yf.Ticker(symbol).funds_data.equity_holdings)
+    except Exception:  # most European listings have no fund data: normal, shown in "Ratios from"
+        pass
+    if pe is None:
+        # .info carries a usable P/E for many ETFs, but its 'priceToBook' is the
+        # fund's price over its own NAV-like book value (around 1-2), not the
+        # holdings' P/B, so only the P/E is taken from there.
         try:
-            info = yf.Ticker(symbol).info or {}
-            pe, pb = fund_ratios_from(info.get("trailingPE"), info.get("priceToBook"))
+            pe, _ = fund_ratios_from((yf.Ticker(symbol).info or {}).get("trailingPE"), None)
         except Exception:
             pass
     return {"pe": pe, "pb": pb}

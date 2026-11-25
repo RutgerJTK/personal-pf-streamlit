@@ -87,3 +87,21 @@ def test_disagreeing_listings_are_flagged(monkeypatch):
     q = market_data.fetch_quotes.__wrapped__({"FR0013416716": ("GOLD.AS", "GLDA.DE")})
     assert q.loc["FR0013416716", "ticker"] == "GOLD.AS"
     assert "GLDA.DE" in q.loc["FR0013416716", "check"]
+
+def test_unknown_symbol_returns_none_quietly(monkeypatch, capsys):
+    """No prices at all (symbol unknown to Yahoo): None, no log line, and the
+    currency is never asked for (fast_info.currency raises KeyError then)."""
+    class Unknown:
+        def __init__(self, ticker):
+            self.history_metadata = {}
+
+        def history(self, **kw):
+            return pd.DataFrame()
+
+        @property
+        def fast_info(self):
+            raise KeyError("currency")
+
+    monkeypatch.setitem(sys.modules, "yfinance", types.SimpleNamespace(Ticker=Unknown))
+    assert market_data._quote("BITC.DE") is None
+    assert "[prices]" not in capsys.readouterr().out

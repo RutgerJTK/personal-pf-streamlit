@@ -7,12 +7,17 @@ result, and the Holdings page falls back to cost basis for that position.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 ISIN_MAP_PATH = Path(__file__).resolve().parents[2] / "shared-config" / "isin_map.json"
+
+# yfinance logs every symbol without data as an ERROR. Spare tickers that don't
+# exist are expected here, and the pages report missing prices themselves.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 
 @st.cache_data(ttl=3600)
@@ -48,13 +53,18 @@ def _quote(ticker: str) -> dict | None:
     try:
         tk = yf.Ticker(ticker)
         h = tk.history(period="1mo", interval="1d", auto_adjust=False, actions=False)
+        if h is None or h.empty or "Close" not in h:
+            # Yahoo has no prices under this symbol (doesn't exist or delisted). Expected
+            # for spare tickers in isin_map.json, so not worth a log line; asking for its
+            # currency would only raise KeyError: 'currency'.
+            return None
         cur = (getattr(tk, "history_metadata", None) or {}).get("currency")
         if not cur:
             cur = tk.fast_info.currency
-    except Exception as exc:  # network, delisted, rate-limited, ...
+    except Exception as exc:  # network, rate-limited, ...
         print(f"[prices] {ticker}: {type(exc).__name__}: {exc}")
         return None
-    if h is None or h.empty or "Close" not in h or not cur:
+    if not cur:
         return None
     closes = h["Close"].astype(float).dropna()
     closes = closes[closes > 0]

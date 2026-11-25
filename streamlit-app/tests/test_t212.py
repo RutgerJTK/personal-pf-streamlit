@@ -179,3 +179,48 @@ def test_etf_valuation_fills_missing_ratio_from_proxy(monkeypatch):
     assert (v["pe"], v["pb"]) == (27.0, 5.6) and v["source"].startswith("via IVV")
     v = sl.etf_valuation("GOLD.AS", ["Some Gold ETC"], RULES)
     assert v["pe"] is None and "not recognised" in v["source"]
+
+
+def test_ratios_from_equity_table_in_yfinance_shape():
+    from security_lookup import ratios_from_equity_table
+    # exactly how yfinance builds funds_data.equity_holdings: labels in the index 'Average'
+    eq = pd.DataFrame({
+        "Average": ["Price/Earnings", "Price/Book", "Price/Sales", "Price/Cashflow",
+                    "Median Market Cap", "3 Year Earnings Growth"],
+        "IVV": [0.0371, 0.1786, 0.31, 0.05, 300000.0, 0.12],
+        "Category Average": [0.04, 0.2, 0.3, 0.05, 1.0, 0.1],
+    }).set_index("Average")
+    pe, pb = ratios_from_equity_table(eq)
+    assert pe == pytest.approx(26.95, abs=0.01) and pb == pytest.approx(5.6, abs=0.01)
+    assert ratios_from_equity_table(eq.reset_index()) == (pe, pb)       # labels as a column
+    empty = eq.copy()
+    empty["IVV"] = pd.NA
+    assert ratios_from_equity_table(empty) == (None, None)
+    assert ratios_from_equity_table(None) == (None, None)
+
+
+def test_rank_candidates_guesses_only_when_needed():
+    hits = [{"symbol": "ASML.AS", "exchange": "AMS", "type": "EQUITY", "name": ""},
+            {"symbol": "ASML", "exchange": "NMS", "type": "EQUITY", "name": ""}]
+    assert rank_candidates("NL0010273215", "ASML", "EUR", hits) == ["ASML.AS", "ASML"]
+    # only an off-currency listing found: guesses in the traded currency go before it
+    hits = [{"symbol": "IWDA.L", "exchange": "LSE", "type": "ETF", "name": ""}]
+    ranked = rank_candidates("IE00B4L5Y983", "EUNL", "EUR", hits)
+    assert ranked[:2] == ["EUNL.AS", "EUNL.DE"] and ranked[-1] == "IWDA.L"
+
+
+def test_first_with_prices_stops_at_first_hit(monkeypatch):
+    import security_lookup as sl
+    asked = []
+
+    def fake(sym):
+        asked.append(sym)
+        if sym == "BOOM":
+            raise ConnectionError("network")
+        return sym in {"EUNL.DE", "VUSA.AS"}
+
+    monkeypatch.setattr(sl, "has_recent_prices", fake)
+    assert sl.first_with_prices(["EUNL.AS", "EUNL.DE", "EUNL.PA"]) == "EUNL.DE"
+    assert asked == ["EUNL.AS", "EUNL.DE"]                      # EUNL.PA never requested
+    assert sl.first_with_prices(["BOOM", "VUSA.AS"]) == "VUSA.AS"  # network error: next one
+    assert sl.first_with_prices(["NOPE.AS"]) is None

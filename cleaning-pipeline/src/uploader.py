@@ -42,8 +42,8 @@ DEFAULT_BUCKET = "personal-pf-streamlit-s3-bucket"  # matches infra/iam/reader-p
 
 RAW_FILES = ("Account.csv", "Transactions.csv")
 CLEANED_KEY = "cleaned/portfolio_transactions.csv"
-EXPECTED_HEADER = ["datetime", "isin", "action", "quantity", "net_amount"]
-ALLOWED_ACTIONS = {"BUY", "SELL", "DIVIDEND", "DEPOSIT", "CASH"}
+EXPECTED_COLUMNS = ["datetime", "isin", "action", "quantity", "net_amount"]
+ALLOWED_ACTIONS = {"BUY", "SELL", "DIVIDEND", "DEPOSIT", "FEE", "CASH"}
 
 
 class UploadError(Exception):

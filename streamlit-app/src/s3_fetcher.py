@@ -10,7 +10,7 @@ keys live in Streamlit secrets:
     bucket_name           = "personal-pf-streamlit-s3-bucket"
     region_name           = "eu-central-1"   # optional but recommended
 
-Only call load_transactions() from pages that run after require_login().
+Only call load_transactions() from pages that run after require_mode().
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 CLEANED_KEY = "cleaned/portfolio_transactions.csv"
 EXPECTED_COLUMNS = ["datetime", "isin", "action", "quantity", "net_amount"]
-ALLOWED_ACTIONS = {"BUY", "SELL", "DIVIDEND", "DEPOSIT", "CASH"}
+ALLOWED_ACTIONS = {"BUY", "SELL", "DIVIDEND", "DEPOSIT", "FEE", "CASH"}
 
 
 def parse_transactions(raw: bytes | str) -> pd.DataFrame:

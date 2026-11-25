@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import engine
+import generic_benchmark as gb
 import generic_session as gs
 from market_data import fetch_history, fetch_quotes, load_benchmarks
 from security_lookup import betas, etf_valuation, fetch_fundamentals, load_etf_proxies, portfolio_ratios
@@ -148,8 +149,32 @@ c3.metric("Profit / loss", eur(pnl, sign=True),
           delta=f"{pnl / invested:+.2%}" if invested > 0 else None,
           help="Current value minus net invested: price gains, dividends, interest, minus all costs.")
 
-# --- 4. Valuation -------------------------------------------------------------------
+# --- 4. Versus the market -------------------------------------------------------------
 benches = load_benchmarks()
+st.subheader("Versus the market")
+m1, m2 = st.columns([4, 3], vertical_alignment="bottom")
+chosen = m1.multiselect(
+    "Compare against", list(benches), default=[n for n in gb.DEFAULT_BENCH if n in benches],
+    max_selections=gb.MAX_BENCH, key="dash_bench", placeholder="Pick indices, commodities, crypto…",
+    format_func=lambda n: f"{n} · {benches[n].get('group', '')}",
+)
+period = m2.segmented_control("Period", list(engine.PERIODS), default="All", key="dash_period") or "All"
+cmp = gb.compare(parsed, chosen, benches)
+if cmp is None:
+    st.info("No deposits found, so there is no return to compare yet.")
+else:
+    if cmp.failed:
+        st.warning(f"No price history for {', '.join(cmp.failed)} right now (Yahoo Finance did not answer).")
+    rebased = engine.rebase(cmp.levels, engine.period_start(cmp.twr.index, period))
+    colors = gb.colors_for([c for c in rebased.columns if c != gb.PORTFOLIO], "dash_bench_colors")
+    st.caption(f"Time-weighted return in EUR, rebased to 0% on {rebased.index[0]:%d %b %Y}: deposits don't "
+               "count as gains, so it compares fairly with an index. Benchmarks include reinvested dividends "
+               "where the source allows it.")
+    st.plotly_chart(gb.cumulative_figure(rebased, colors, height=420), width="stretch")
+    st.page_link("views/generic/benchmark.py", label="Returns per year, drawdowns and more on the Benchmark page",
+                 icon="🏁")
+
+# --- 5. Valuation -------------------------------------------------------------------
 eq_benches = [n for n, b in benches.items() if b.get("group") == "Equity"] or list(benches)
 t1, t2 = st.columns([3, 2], vertical_alignment="bottom")
 t1.subheader("Valuation")
@@ -211,7 +236,7 @@ with v3:
            f"Value-weighted average of each position's beta: 1.0 moves in line with {beta_vs}, "
            "above 1 swings harder.")
 
-# --- 5. Holdings ----------------------------------------------------------------------
+# --- 6. Holdings ----------------------------------------------------------------------
 st.subheader("Holdings")
 table = pd.DataFrame({
     "Name": h["name"], "Ticker": h["short"], "Type": h["group"], "Shares": h["quantity"],
@@ -237,7 +262,7 @@ st.dataframe(
 )
 st.caption("Prices are in euros. Avg cost includes Trading 212's FX fee.")
 
-# --- 6. Allocation ----------------------------------------------------------------------
+# --- 7. Allocation ----------------------------------------------------------------------
 st.subheader("Allocation")
 a1, a2 = st.columns([2, 1])
 

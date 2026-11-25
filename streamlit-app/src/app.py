@@ -21,6 +21,7 @@ if mode == "personal":
 else:
     pages = [
         st.Page("views/generic/dashboard.py", title="Dashboard", icon="📊", default=True),
+        st.Page("views/generic/benchmark.py", title="Benchmark", icon="🏁", url_path="generic-benchmark"),
     ]
 
 pg = st.navigation(pages)

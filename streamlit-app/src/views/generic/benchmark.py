@@ -10,16 +10,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import engine
+import generic_benchmark as gb
 import generic_session as gs
-from market_data import fetch_history, load_benchmarks
+from generic_benchmark import MAX_BENCH, NEUTRAL, PORTFOLIO, PORTFOLIO_COLOR
+from market_data import load_benchmarks
 
-# Categorical palette in fixed order. The portfolio always owns slot 1 (blue);
-# each benchmark keeps the slot it got when first selected.
-PORTFOLIO = "Portfolio"
-PORTFOLIO_COLOR = "#2a78d6"
-SLOTS = ["#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
-NEUTRAL = "#8a8986"
-MAX_BENCH = len(SLOTS)
+_line, _layout = gb.line, gb.layout
 
 
 def pct(x: float, sign: bool = True, digits: int = 1) -> str:
@@ -30,30 +26,6 @@ def pct(x: float, sign: bool = True, digits: int = 1) -> str:
 
 def eur(x: float) -> str:
     return f"€{x:,.0f}".replace("€-", "-€")
-
-
-def _layout(fig: go.Figure, height: int, pct_axis: bool = True) -> go.Figure:
-    fig.update_layout(
-        height=height, margin=dict(l=0, r=0, t=10, b=0), hovermode="x unified",
-        legend=dict(orientation="h", y=-0.12, title=None),
-        xaxis=dict(title=None), yaxis=dict(title=None, ticksuffix="%" if pct_axis else None),
-    )
-    return fig
-
-
-def colors_for(selected: list[str]) -> dict[str, str]:
-    """Sticky color slot per benchmark for as long as it stays selected."""
-    held = {k: v for k, v in st.session_state.get("gbench_colors", {}).items() if k in selected}
-    for name in selected:
-        if name not in held:
-            free = [c for c in SLOTS if c not in held.values()]
-            held[name] = free[0] if free else NEUTRAL
-    st.session_state["gbench_colors"] = held
-    return {PORTFOLIO: PORTFOLIO_COLOR, **held}
-
-
-def _line(name: str, color: str) -> dict:
-    return dict(color=color, width=3 if name == PORTFOLIO else 2)
 
 
 st.title("🏁 Am I Beating the Market?")
@@ -70,7 +42,7 @@ if not benches:
 # --- Controls ---------------------------------------------------------------
 c1, c2 = st.columns([4, 3], vertical_alignment="bottom")
 selected = c1.multiselect(
-    "Compare against", list(benches), default=[n for n in ("S&P 500", "MSCI World") if n in benches],
+    "Compare against", list(benches), default=[n for n in gb.DEFAULT_BENCH if n in benches],
     max_selections=MAX_BENCH, placeholder="Pick indices, commodities, crypto…",
     format_func=lambda n: f"{n} · {benches[n].get('group', '')}", key="gbench_selected",
     help=f"Up to {MAX_BENCH} at once.",
@@ -78,43 +50,19 @@ selected = c1.multiselect(
 period = c2.segmented_control("Period", list(engine.PERIODS), default="All", key="gbench_period") or "All"
 
 # --- Data -------------------------------------------------------------------
-first_day = df["datetime"].min().normalize()
-fetch_from = (first_day - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
-
-bench_cols, bench_info, failed = {}, [], []
-for name in selected:  # one call per benchmark, so each is cached on its own and shared
-    p, info = fetch_history({name: tuple(benches[name]["tickers"])}, fetch_from, adjusted=True)
-    if name in p:
-        clean, _ = engine.repair_prices(p[[name]])
-        bench_cols[name] = clean[name].dropna()
-        bench_info.append(info.loc[name].to_dict() | {"name": name})
-    else:
-        failed.append(name)
-if failed:
-    st.warning(f"No price history for {', '.join(failed)} right now (Yahoo Finance did not answer).")
-
-traded = df.loc[df["action"].isin(["BUY", "SELL"]), "isin"].unique()
-res = gs.resolve(parsed, traded)  # closed positions too: they were part of past returns
-own_prices, _ = fetch_history({i: c for i, c in res.candidates.items() if c}, fetch_from, adjusted=False)
-hist = engine.portfolio_history(df, own_prices)
-daily = hist["daily"]
-twr = engine.twr_index(daily)
-if twr.empty:
+cmp = gb.compare(parsed, selected, benches)
+if cmp is None:
     st.info("No deposits found, so there is no return to compare yet.")
     st.stop()
-
-days = pd.date_range(first_day, pd.Timestamp.today().normalize(), freq="D")
-levels = pd.DataFrame(index=days)
-levels[PORTFOLIO] = twr.reindex(days)
-for name, s in bench_cols.items():
-    levels[name] = s.reindex(s.index.union(days)).sort_index().ffill().reindex(days)
-levels = levels.dropna(axis=1, how="all")
+if cmp.failed:
+    st.warning(f"No price history for {', '.join(cmp.failed)} right now (Yahoo Finance did not answer).")
+levels, daily, twr = cmp.levels, cmp.daily, cmp.twr
 
 start = engine.period_start(twr.index, period)
 rebased = engine.rebase(levels, start)
 series = list(rebased.columns)
 bench_names = [c for c in series if c != PORTFOLIO]
-colors = colors_for(bench_names)
+colors = gb.colors_for(bench_names, "gbench_colors")
 stats = engine.perf_stats(rebased, ref=PORTFOLIO)
 years = (rebased.index[-1] - rebased.index[0]).days / 365.25
 
@@ -148,19 +96,7 @@ if years < 0.5:
 st.subheader("Cumulative return")
 st.caption(f"Everything in EUR, rebased to 0% on {rebased.index[0]:%d %b %Y}. "
            "Benchmarks include reinvested dividends where the source allows it.")
-fig = go.Figure()
-for name in bench_names + [PORTFOLIO]:
-    y = (rebased[name] - 1) * 100
-    fig.add_scatter(x=y.index, y=y, name=name, mode="lines", line=_line(name, colors[name]),
-                    hovertemplate="%{y:+.1f}%<extra>" + name + "</extra>")
-    last = y.dropna()
-    if len(last) and len(series) <= 4:
-        fig.add_annotation(x=last.index[-1], y=last.iloc[-1], text=f"{name} {last.iloc[-1]:+.0f}%",
-                           showarrow=False, xanchor="left", xshift=6, font=dict(size=12))
-fig.add_hline(y=0, line=dict(color=NEUTRAL, width=1))
-fig = _layout(fig, 460)
-if len(series) <= 4:
-    fig.update_layout(margin=dict(r=140))
+fig = gb.cumulative_figure(rebased, colors)
 st.plotly_chart(fig, width="stretch")
 
 # --- Stats table ------------------------------------------------------------

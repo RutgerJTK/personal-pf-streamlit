@@ -166,3 +166,16 @@ def test_betas_recover_known_beta():
     assert b.loc["double", "beta"] == pytest.approx(2.0, abs=0.1)
     assert abs(b.loc["noise", "beta"]) < 0.3
     assert np.isnan(b.loc["short", "beta"])                    # under 26 weeks of overlap
+
+
+def test_etf_valuation_fills_missing_ratio_from_proxy(monkeypatch):
+    import security_lookup as sl
+    data = {"EUNL.DE": {"pe": 20.4, "pb": None}, "URTH": {"pe": 22.0, "pb": 3.7},
+            "VUSA.AS": {"pe": None, "pb": None}, "IVV": {"pe": 27.0, "pb": 5.6}}
+    monkeypatch.setattr(sl, "fetch_fund_ratios", lambda s: data.get(s, {"pe": None, "pb": None}))
+    v = sl.etf_valuation("EUNL.DE", ["iShares Core MSCI World (Acc)"], RULES)
+    assert (v["pe"], v["pb"]) == (20.4, 3.7) and v["source"] == "EUNL.DE fund data + URTH"
+    v = sl.etf_valuation("VUSA.AS", ["Vanguard S&P 500 (Dist)"], RULES)
+    assert (v["pe"], v["pb"]) == (27.0, 5.6) and v["source"].startswith("via IVV")
+    v = sl.etf_valuation("GOLD.AS", ["Some Gold ETC"], RULES)
+    assert v["pe"] is None and "not recognised" in v["source"]

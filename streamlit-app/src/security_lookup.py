@@ -205,19 +205,28 @@ def fetch_fund_ratios(symbol: str) -> dict:
 
 
 def etf_valuation(symbol: str | None, names: list[str], rules: list[dict]) -> dict:
-    """P/E and P/B for one held ETF: its own Yahoo fund data, else a US proxy
-    tracking the same index. 'source' says which was used."""
-    if symbol:
-        r = fetch_fund_ratios(symbol)
-        if r["pe"] is not None or r["pb"] is not None:
-            return r | {"source": f"{symbol} fund data"}
+    """P/E and P/B for one held ETF: its own Yahoo fund data, with anything
+    missing filled from a US proxy tracking the same index. 'source' says
+    which was used."""
+    own = fetch_fund_ratios(symbol) if symbol else {"pe": None, "pb": None}
+    if own["pe"] is not None and own["pb"] is not None:
+        return own | {"source": f"{symbol} fund data"}
     rule = etf_proxy(names, rules)
-    if rule:
-        r = fetch_fund_ratios(rule["proxy"])
-        if r["pe"] is not None or r["pb"] is not None:
-            return r | {"source": f"via {rule['proxy']} ({rule['index']})"}
-        return {"pe": None, "pb": None, "source": f"no data ({rule['proxy']} has none)"}
-    return {"pe": None, "pb": None, "source": "no data, index not recognised"}
+    proxy = fetch_fund_ratios(rule["proxy"]) if rule else {"pe": None, "pb": None}
+    out = {k: own[k] if own[k] is not None else proxy[k] for k in ("pe", "pb")}
+    has_own = any(own[k] is not None for k in ("pe", "pb"))
+    has_proxy = any(own[k] is None and proxy[k] is not None for k in ("pe", "pb"))
+    if has_own and has_proxy:
+        source = f"{symbol} fund data + {rule['proxy']}"
+    elif has_own:
+        source = f"{symbol} fund data"
+    elif has_proxy:
+        source = f"via {rule['proxy']} ({rule['index']})"
+    elif rule:
+        source = f"no data ({rule['proxy']} has none)"
+    else:
+        source = "no data, index not recognised"
+    return out | {"source": source}
 
 
 # =============================================================================
